@@ -152,11 +152,43 @@ def handle_payload(payload: dict[str, Any]) -> dict[str, Any]:
             return format_allow(host, overwrite=s_res["overwrite"], orig_args=args)
         return format_allow(host)
 
-    # 3. Noisy Command Output Filter (allowlist-friendly `--pipe` prefix preservation)
-    if norm_tool in ("run_command", "Bash", "Shell", "run_shell_command"):
+    # 3. Noisy Command Output Filter & Shell Full-File Dump Guard (`cat` / `Get-Content`)
+    if norm_tool in ("run_command", "Bash", "Shell", "run_shell_command", "exec_command"):
+        import re
+        cmd_key = (
+            "CommandLine"
+            if "CommandLine" in args
+            else ("command" if "command" in args else ("cmd" if "cmd" in args else "Command"))
+        )
+        cmd_line = str(args.get(cmd_key) or "").strip()
+        cwd = str(payload.get("cwd") or args.get("workdir") or "")
+
+        # Intercept unbounded shell full-file dumps (`cat foo.py`, `Get-Content foo.py`) on >500L files/lockfiles
+        is_bounded_shell_read = any(
+            k in cmd_line for k in ("-TotalCount", "-First", "-Last", "-Skip", "Select-Object", "head ", "tail ", "sed ")
+        )
+        m_dump = (
+            None
+            if is_bounded_shell_read
+            else re.match(
+                r"^(?:Get-Content|gc|cat|type)(?:\s+-(?:Path|LiteralPath|Raw))*\s+['\"]?([^'\"|;&><\n]+?\.[A-Za-z0-9]{1,8})['\"]?\s*$",
+                cmd_line,
+                re.I,
+            )
+        )
+        if m_dump:
+            from read_guard import evaluate_read
+            raw_target = m_dump.group(1).strip()
+            full_target = (
+                os.path.join(cwd, raw_target)
+                if cwd and not os.path.isabs(raw_target)
+                else raw_target
+            )
+            r_res = evaluate_read(conv_id, full_target, None, None)
+            if not r_res.get("allow", True):
+                return format_deny(host, r_res.get("reason") or "Blocked unbounded shell file dump")
+
         from cmd_filter import maybe_rewrite_command
-        cmd_key = "CommandLine" if "CommandLine" in args else ("command" if "command" in args else "Command")
-        cmd_line = str(args.get(cmd_key) or "")
         rewritten = maybe_rewrite_command(
             cmd_line,
             script_path=os.path.join(SCRIPT_DIR, "cmd_filter.py"),

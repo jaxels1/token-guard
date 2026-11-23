@@ -30,11 +30,39 @@ git clone https://github.com/jaxels1/token-guard.git ~/.gemini/config/plugins/to
 
 ---
 
-## Verified Benchmarks: Live 24-Task A/B Suite + 63-Session Transcript Replay
+## Verified Benchmarks: Live `GPT-6.1 Terra` CLI A/B + 24-Task Harness + 63-Session Replay
 
-We separate **live A/B execution (including behavioral rebound tool calls)** from **offline historical transcript replay (theoretical upper-bound recoverable bloat)** so every claim is transparent and reproducible.
+We publish **three distinct tiers of benchmark evidence**—so you can see real end-to-end LLM behavior on **`gpt-6.1-terra` (`GPT-6.1 Terra` in the ChatGPT / Codex Desktop app)**, deterministic 24-task A/B harness numbers (including rebound calls), and 63-session historical replay bounds.
 
-### 1. Live 24-Task A/B Benchmark (`python3 scripts/ab_benchmark.py`)
+### 1. Live End-to-End `GPT-6.1 Terra` (`gpt-6.1-terra`) ChatGPT App A/B Benchmark (`scripts/live_codex_ab.py`)
+
+Executed live via the ChatGPT / Codex Desktop app CLI (`codex.exe exec -m gpt-6.1-terra -c model_reasoning_effort="low" --ephemeral --json`) with `token-guard` **OFF** vs. **ON** (`~/.codex/hooks.json` + `~/.codex/skills/token-guard` enabled) across two representative coding tasks:
+- **`T1_large_file_bug_lookup`**: Locate an off-by-one fee multiplier bug inside a 560-line Python module (`billing_engine.py`, `compute_fee_tier_14`).
+- **`T2_noisy_test_diagnosis`**: Run a 140-test verbose `unittest` suite (`test_billing.py`) and diagnose the single failing test case and expected vs. actual values.
+
+| Task / Metric (`gpt-6.1-terra` Live Run) | `token-guard` OFF | `token-guard` ON | Live Delta |
+| :--- | :--- | :--- | :--- |
+| **`T1` Large-File Lookup — Task Pass** | `PASS` (`0.04` vs `0.05`) | **`PASS` (`0.04` vs `0.05`)** | **`100%` accuracy** |
+| **`T1` Large-File Lookup — Tool Output Bytes** | `3,311` bytes | **`2,547` bytes** | **`-23.1%` tool output bytes** |
+| **`T2` Noisy 140-Test Diagnosis — Task Pass** | `PASS` (`50.0` vs `40.0`) | **`PASS` (`50.0` vs `40.0`)** | **`100%` accuracy** |
+| **`T2` Noisy 140-Test Diagnosis — Tool Output Bytes** | `28,294` bytes (`28.3 KB`) | **`4,321` bytes (`4.3 KB`)** | **`-84.7%` stdout bytes fed to model** |
+| **`T2` Noisy 140-Test Diagnosis — Total Input Tokens** | `68,204` tokens | **`43,359` tokens** | **`-36.4%` total input tokens (`-24,845` tok)** |
+| **`T2` Noisy 140-Test Diagnosis — Fresh Uncached Tokens** | `12,012` tokens | **`9,823` tokens** | **`-18.2%` fresh uncached tokens** |
+| **`T2` Noisy 140-Test Diagnosis — Output Tokens** | `136` tokens | **`93` tokens** | **`-31.6%` output tokens** |
+| **`T2` Noisy 140-Test Diagnosis — Tool Calls & Wall Time** | `2` calls · `9.64s` | **`1` call · `8.96s`** | **`-50%` tool calls · `-7.1%` faster** |
+| **Combined (`T1 + T2`) — Total Tool Output Bytes** | `31,605` bytes | **`6,868` bytes** | **`-78.3%` total tool output bytes** |
+| **Combined (`T1 + T2`) — Total Input Tokens** | `150,091` tokens | **`129,815` tokens** | **`-13.5%` total input tokens (`-20,276` tok)** |
+| **Combined (`T1 + T2`) — Tool Calls & Output Tokens** | `5` calls · `351` out tok | **`4` calls · `311` out tok** | **`-20.0%` calls · `-11.4%` output tokens** |
+
+> **Transparency note on `T1` prompt cache**: Toggling `features.skip_host_skill_discovery` from `true` (`OFF`) to `false` (`ON`) loads the host `~/.codex/skills` catalog (~7.2k tokens of installed skill descriptions) into the initial turn-1 prefix (`T1` uncached tokens `2,783` warm cache → `10,040` on skill-catalog mount). Once the prefix is warm (`T2`), `token-guard` cuts both total input tokens (`-36.4%`) and fresh uncached tokens (`-18.2%`) while completing `7.1%` faster.
+
+Reproduce locally with your ChatGPT / Codex app CLI:
+
+```bash
+python3 scripts/live_codex_ab.py
+```
+
+### 2. Deterministic 24-Task A/B Benchmark Harness (`python3 scripts/ab_benchmark.py`)
 
 Runs 24 deterministic coding tasks across four categories (`large_file_bugfix`, `multi_read_refactor`, `monorepo_search_audit`, and `compaction_recovery`) against a multi-file fixture repo—explicitly counting **behavioral rebound tool calls** (e.g. when `read_guard.py` blocks an unbounded `>500`-line read and returns an AST structural outline, the agent issues a follow-up bounded `StartLine`/`EndLine` read for the target function):
 
@@ -52,7 +80,7 @@ python3 scripts/ab_benchmark.py
 python3 scripts/ab_benchmark.py --json
 ```
 
-### 2. Offline Transcript Replay Analysis (63 Real ChatGPT / Codex Sessions + 610-Turn Antigravity Session)
+### 3. Offline Transcript Replay Analysis (63 Real ChatGPT / Codex Sessions + 610-Turn Antigravity Session)
 
 Running `scripts/audit_transcript.py` retroactively over **63 real ChatGPT / OpenAI Codex Desktop transcripts** (`~/.codex/sessions/**/rollout-*.jsonl`, `15,024` tool calls across `561` turns) plus a **610-turn Antigravity session** (`694` tool calls) measures the upper-bound duplicate-read and command-output waste present in unguarded sessions:
 

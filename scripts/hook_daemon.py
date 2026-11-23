@@ -112,6 +112,7 @@ def ensure_daemon_started(state_dir: Path | None = None) -> bool:
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "close_fds": True,
+        "cwd": str(s_dir),
     }
     if os.name == "nt":
         kwargs["creationflags"] = (

@@ -1,6 +1,13 @@
-# Token Guard — Architecture, Live A/B Benchmarks & Replay Audit
+# Token Guard — Architecture, Live `GPT-6.1 Terra` A/B, 24-Task Harness & Replay Audit
 
-## 1. Live 24-Task A/B Benchmark (`scripts/ab_benchmark.py`)
+## 0. Live End-to-End `GPT-6.1 Terra` (`gpt-6.1-terra`) ChatGPT App A/B (`scripts/live_codex_ab.py`)
+
+Executed live via `codex.exe exec -m gpt-6.1-terra` comparing `token-guard` **OFF** vs. **ON**:
+- **`T1_large_file_bug_lookup` (560-line `billing_engine.py`)**: `PASS` on both; tool output bytes dropped **`3,311` → `2,547` bytes (`-23.1%`)**.
+- **`T2_noisy_test_diagnosis` (140-test verbose `unittest` suite)**: `PASS` on both; tool output bytes dropped **`28,294` → `4,321` bytes (`-84.7%`)**, total input tokens dropped **`68,204` → `43,359` (`-36.4%`, `-24,845` tok)**, fresh uncached tokens dropped **`12,012` → `9,823` (`-18.2%`)**, output tokens dropped **`136` → `93` (`-31.6%`)**, tool calls dropped **`2` → `1` (`-50%`)**, and wall time dropped **`9.64s` → `8.96s` (`-7.1%`)**.
+- **Combined (`T1 + T2`)**: `2/2 (100%)` pass rate, **`-78.3%` tool output bytes** (`31,605` → `6,868` bytes), **`-13.5%` total input tokens** (`150,091` → `129,815`, saving `20,276` tokens), **`-20.0%` tool calls**, and **`-11.4%` output tokens**.
+
+## 1. Deterministic 24-Task A/B Benchmark (`scripts/ab_benchmark.py`)
 
 Measures **Baseline Agent** vs. **`token-guard` Enabled** across 24 deterministic coding tasks (`large_file_bugfix`, `multi_read_refactor`, `monorepo_search_audit`, `compaction_recovery`), explicitly including **behavioral rebound tool calls** (e.g. bounded follow-up slice reads after an automatic AST outline block):
 

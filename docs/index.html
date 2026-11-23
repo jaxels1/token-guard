@@ -136,15 +136,15 @@
         </div>
       </div>
 
-      <h2>Live 24-Task A/B Benchmark + 63-Session Replay Audit</h2>
+      <h2>Live GPT-6.1 Terra A/B + 24-Task Harness + 63-Session Replay</h2>
       <div class="grid">
         <div class="card">
-          <h3>24/24 Pass &middot; -95.0% in Live A/B</h3>
-          <p>Across 24 deterministic tasks in <code>ab_benchmark.py</code> (including 6 rebound slice reads after AST outlines): <strong>100% task pass rate</strong> and <strong>443,112 &rarr; 22,292 fresh tokens</strong>.</p>
+          <h3>Live GPT-6.1 Terra A/B</h3>
+          <p>On <code>gpt-6.1-terra</code> (<code>live_codex_ab.py</code>): <strong>-78.3% tool output bytes</strong> (<code>31.6 KB &rarr; 6.9 KB</code>), <strong>-36.4% input tokens</strong> on noisy test diagnosis (<code>-24,845 tok</code>), <strong>-20% tool calls</strong>, and <strong>100% pass rate</strong>.</p>
         </div>
         <div class="card">
-          <h3>p50 = 1.95 ms Hook Latency</h3>
-          <p>Persistent background worker (<code>hook_daemon.py</code>) keeps state hot in memory over a <code>TCP_NODELAY</code> socket, cutting per-call hook latency to <strong>1.95 ms median</strong>.</p>
+          <h3>24/24 Pass &middot; p50 1.95 ms</h3>
+          <p>Across 24 deterministic tasks in <code>ab_benchmark.py</code> (including 6 rebound slice reads): <strong>100% pass rate</strong>, <strong>443k &rarr; 22k fresh tokens (-95%)</strong>, and <strong>1.95 ms median daemon latency</strong>.</p>
         </div>
         <div class="card">
           <h3>-55.5% Replay Recoverable Burn</h3>
