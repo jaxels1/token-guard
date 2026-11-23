@@ -28,6 +28,32 @@ git clone https://github.com/jaxels1/token-guard.git ~/.gemini/config/plugins/to
 - **Cursor**: Copy `.cursor/hooks.json`, `skills/token-guard/`, and `scripts/` into your workspace or config root.
 - **ChatGPT / OpenAI Codex Desktop**: Clone or copy `skills/token-guard/` and `scripts/` into `~/.codex/skills/token-guard`.
 
+### Scan Your Own Machine (`--scan-all`)
+
+See exactly how many duplicate file reads and megabytes of noisy test/CLI output are sitting in your local Claude Code (`~/.claude/projects`), ChatGPT / Codex (`~/.codex/sessions`), and Antigravity (`~/.gemini/antigravity/brain`) session logs right now:
+
+```bash
+python3 scripts/audit_transcript.py --scan-all
+```
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│ TOKEN-GUARD · LOCAL AGENT SESSION SCORECARD                     v1.1.0 │
+├────────────────────────────────────────────────────────────────────────┤
+│ Sessions scanned: 75                 Turns: 1,523 · Tool calls: 16,167 │
+│   • ChatGPT / Codex           53 sessions · 15,024 calls · ~14.75M tok │
+│   • Antigravity                  22 sessions · 1,143 calls · ~33,825 tok │
+├────────────────────────────────────────────────────────────────────────┤
+│ Duplicate unchanged file reads:                          2,964 blocked │
+│ Unbounded lockfile / bundle reads:                           0 blocked │
+│ Noisy CLI / test outputs compressed:      45.42 MB -> 8.76 MB (-80.7%) │
+│ Recorded KV prefix cache hit rate:       97.8% (1.19B / 1.22B tok)     │
+├────────────────────────────────────────────────────────────────────────┤
+│ RECOVERABLE CONTEXT BLOAT:     56.39 MB (~14.78M tok) (-55.7% fresh burn) │
+│ Install token-guard:                npx skills add jaxels1/token-guard │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
 ---
 
 ## Verified Benchmarks: Live `GPT-6.1 Terra` CLI A/B + 24-Task Harness + 63-Session Replay

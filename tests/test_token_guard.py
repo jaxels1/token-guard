@@ -323,6 +323,54 @@ class TestAuditTranscript(unittest.TestCase):
             c_rep = audit_transcript.audit_transcript(claude)
             self.assertEqual(c_rep["duplicate_reads_detected"], 1)
 
+    def test_scan_all_discovers_and_deduplicates_antigravity_transcripts(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            claude_dir = home / ".claude" / "projects" / "proj1"
+            claude_dir.mkdir(parents=True)
+            (claude_dir / "s1.jsonl").write_text(
+                "\n".join(
+                    [
+                        json.dumps({"type": "user", "message": {"content": "hi"}}),
+                        json.dumps(
+                            {
+                                "type": "assistant",
+                                "message": {
+                                    "content": [
+                                        {"type": "tool_use", "name": "Read", "input": {"file_path": "/x.py"}},
+                                        {"type": "tool_use", "name": "Read", "input": {"file_path": "/x.py"}},
+                                    ]
+                                },
+                            }
+                        ),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            agy_logs = home / ".gemini" / "antigravity" / "brain" / "conv-1" / ".system_generated" / "logs"
+            agy_logs.mkdir(parents=True)
+            sample_agy = json.dumps(
+                {
+                    "step_index": 1,
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {"name": "read_file", "args": {"Path": "/repo/package-lock.json"}},
+                    ],
+                }
+            )
+            # Write both transcript_full.jsonl and transcript.jsonl to verify only one is counted
+            (agy_logs / "transcript_full.jsonl").write_text(sample_agy, encoding="utf-8")
+            (agy_logs / "transcript.jsonl").write_text(sample_agy, encoding="utf-8")
+
+            summary = audit_transcript.scan_all_transcripts(home_dir=home)
+            self.assertEqual(summary["sessions_scanned"], 2)
+            self.assertEqual(summary["duplicate_reads_detected"], 1)
+            self.assertEqual(summary["unbounded_token_bomb_reads"], 1)
+            card = audit_transcript.format_scan_all_scorecard(summary)
+            self.assertIn("TOKEN-GUARD", card)
+            self.assertIn("Sessions scanned: 2", card)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -107,7 +107,8 @@
         output compression, a cache-safe <code>&lt;350</code>-token skill, and a JSONL transcript auditor.
       </p>
 
-      <pre><code>npx skills add jaxels1/token-guard</code></pre>
+      <pre><code>npx skills add jaxels1/token-guard
+python3 scripts/audit_transcript.py --scan-all</code></pre>
 
       <div class="demo">
         <img
@@ -131,8 +132,8 @@
           <p>Caps monorepo <code>rg</code> / <code>Grep</code> explosions at 80 matches (excluding <code>node_modules</code> &amp; lockfiles) and serves hooks from a persistent worker (<code>p50 = 1.95 ms</code>).</p>
         </div>
         <div class="card">
-          <h3>Live A/B + Replay Auditors</h3>
-          <p>Ships a live <code>GPT-6.1 Terra</code> CLI A/B runner (<code>live_codex_ab.py</code>), a 24-task deterministic A/B harness (<code>ab_benchmark.py</code>), and a JSONL transcript auditor (<code>audit_transcript.py</code>).</p>
+          <h3>Live A/B + --scan-all Scorecard</h3>
+          <p>Ships a live <code>GPT-6.1 Terra</code> CLI A/B runner (<code>live_codex_ab.py</code>), a 24-task deterministic A/B harness (<code>ab_benchmark.py</code>), and a zero-config machine scanner (<code>audit_transcript.py --scan-all</code>).</p>
         </div>
       </div>
 
