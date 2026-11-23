@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-token-guard ab_benchmark: Reproducible 24-task live A/B benchmark harness
-comparing Baseline Agent vs. token-guard Enabled across bug-fix, monorepo
-search, large-file navigation, noisy test debugging, and post-compaction
-recovery tasks.
+token-guard ab_benchmark: Reproducible 24-task deterministic synthetic A/B
+simulation harness comparing Baseline Agent vs. token-guard Enabled across
+bug-fix, monorepo search, large-file navigation, noisy test debugging, and
+post-compaction recovery fixtures.
 
 Explicitly models behavioral rebound tool calls (follow-up bounded reads after
 an outline block, post-compaction re-reads, and temp-log slice inspection) and
@@ -137,7 +137,7 @@ def _read_slice_bytes(file_path: Path, start_line: int | None = None, end_line: 
 
 
 def run_ab_suite() -> dict[str, Any]:
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         root = Path(tmp)
         state_dir = root / "state"
         os.environ["PLUGIN_DATA"] = str(state_dir)
@@ -446,7 +446,7 @@ def run_ab_suite() -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run 24-task live A/B benchmark suite for token-guard.")
+    parser = argparse.ArgumentParser(description="Run 24-task deterministic synthetic A/B simulation for token-guard.")
     parser.add_argument("--json", action="store_true", help="Output JSON report")
     ns = parser.parse_args(argv)
 
@@ -457,7 +457,7 @@ def main(argv: list[str] | None = None) -> int:
         b = report["baseline"]
         g = report["token_guard"]
         d = report["delta"]
-        print(f"=== token-guard 24-Task Live A/B Benchmark (including rebound calls) ===")
+        print(f"=== token-guard 24-Task Deterministic A/B Simulation (including rebound calls) ===")
         print(f"1. Task Pass Rate:         Baseline {b['tasks_passed']}/{report['tasks_total']} ({b['pass_rate_pct']}%)  vs  token-guard {g['tasks_passed']}/{report['tasks_total']} ({g['pass_rate_pct']}%)")
         print(f"2. Fresh Uncached Tokens:  Baseline {b['fresh_uncached_tokens']:,} tok  vs  token-guard {g['fresh_uncached_tokens']:,} tok (-{d['fresh_token_reduction_pct']}%, saved {d['fresh_tokens_saved']:,} tok)")
         print(f"3. Wall-Clock & Latency:   Suite {g['wall_clock_ms']} ms total | Persistent daemon hook p50={g['p50_daemon_hook_latency_ms']} ms (avg={g['avg_daemon_hook_latency_ms']} ms)")

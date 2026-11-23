@@ -1,9 +1,12 @@
+import concurrent.futures
 import io
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -16,6 +19,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import audit_transcript  # noqa: E402
 import cmd_filter  # noqa: E402
+import hook_daemon  # noqa: E402
 import hook_entry  # noqa: E402
 import read_guard  # noqa: E402
 
@@ -107,25 +111,43 @@ class TestReadGuard(unittest.TestCase):
             read_guard.evaluate_read("c", str(big_file), 1, 100, state_dir=self.state_dir)["allow"]
         )
 
+    def test_binary_media_allowed_unbounded(self):
+        img = self.root / "screenshot.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + (b"\x00" * 55000))
+        res = read_guard.evaluate_read("conv-media", str(img), state_dir=self.state_dir)
+        self.assertTrue(res["allow"])
+        self.assertEqual(res["code"], "ok")
+
 
 class TestCmdFilter(unittest.TestCase):
     def test_rewrite_and_skip_pipelines(self):
-        # Default mode preserves original command prefix at the start and pipes to `--pipe`
+        # Default mode uses `--run -- <cmd>` so failing exit codes are preserved across shells
         rewritten = cmd_filter.maybe_rewrite_command("pytest -q tests/", prefer_rtk=False)
         self.assertIsNotNone(rewritten)
-        self.assertTrue(rewritten.startswith("pytest -q tests/ 2>&1 | python3 "))
-        self.assertIn("--pipe", rewritten)
+        self.assertTrue(rewritten.startswith("python3 "))
+        self.assertIn("--run -- pytest -q tests/", rewritten)
 
-        # Unbounded rg / grep -r rewrites to `--pipe-search`
+        # Unbounded rg / grep -r defaults to `--run-search`
         rg_cmd = cmd_filter.maybe_rewrite_command("rg my_symbol", prefer_rtk=False)
         self.assertIsNotNone(rg_cmd)
-        self.assertTrue(rg_cmd.startswith("rg my_symbol 2>&1 | python3 "))
-        self.assertIn("--pipe-search", rg_cmd)
+        self.assertIn("--run-search -- rg my_symbol", rg_cmd)
 
-        # Leading cd stays in cleartext at the front and pipes the tail command
+        # Leading cd stays in cleartext at the front and wraps the tail command
         cd_cmd = cmd_filter.maybe_rewrite_command("cd /repo && pytest -q", prefer_rtk=False)
         self.assertIsNotNone(cd_cmd)
-        self.assertTrue(cd_cmd.startswith("cd /repo && pytest -q 2>&1 | python3 "))
+        self.assertTrue(cd_cmd.startswith("cd /repo && python3 "))
+        self.assertIn("--run -- pytest -q", cd_cmd)
+
+        # Explicit pipe mode & TOKEN_GUARD_REWRITE_MODE=pipe keep command prefix at the start
+        piped = cmd_filter.maybe_rewrite_command("pytest -q tests/", prefer_rtk=False, mode="pipe")
+        self.assertIsNotNone(piped)
+        self.assertTrue(piped.startswith("pytest -q tests/ 2>&1 | python3 "))
+        self.assertIn("--pipe", piped)
+        with mock.patch.dict(os.environ, {"TOKEN_GUARD_REWRITE_MODE": "pipe"}):
+            env_piped = cmd_filter.maybe_rewrite_command("rg my_symbol", prefer_rtk=False)
+            self.assertIsNotNone(env_piped)
+            self.assertTrue(env_piped.startswith("rg my_symbol 2>&1 | python3 "))
+            self.assertIn("--pipe-search", env_piped)
 
         # Complex PowerShell cmdlets fall back to `--run-b64` with `--shell pwsh`
         pwsh_cmd = cmd_filter.maybe_rewrite_command('Set-Location "C:\\repo"; python3 -m unittest', prefer_rtk=False)
@@ -139,6 +161,40 @@ class TestCmdFilter(unittest.TestCase):
         self.assertIsNone(cmd_filter.maybe_rewrite_command("git log | head -n 5"))
         self.assertIsNone(cmd_filter.maybe_rewrite_command("git log --oneline -n 10"))
         self.assertIsNone(cmd_filter.maybe_rewrite_command("git status -s"))
+
+    def test_default_run_rewrite_preserves_nonzero_exit_code(self):
+        with tempfile.TemporaryDirectory() as td:
+            failing_test = Path(td) / "test_fail.py"
+            failing_test.write_text(
+                "import unittest\n"
+                "class T(unittest.TestCase):\n"
+                "    def test_boom(self):\n"
+                "        self.fail('intentional failure')\n",
+                encoding="utf-8",
+            )
+            rewritten = cmd_filter.maybe_rewrite_command(
+                f"{sys.executable} -m unittest test_fail.py",
+                script_path=str(SCRIPTS_DIR / "cmd_filter.py"),
+                prefer_rtk=False,
+            )
+            # If sys.executable contains spaces (e.g., C:\Program Files\...), rewrite uses --run-b64; otherwise --run
+            if rewritten is None:
+                # Fallback direct test if executable path wasn't matched as `python3 -m unittest`
+                rewritten = cmd_filter.maybe_rewrite_command(
+                    "python3 -m unittest test_fail.py",
+                    script_path=str(SCRIPTS_DIR / "cmd_filter.py"),
+                    prefer_rtk=False,
+                )
+            self.assertIsNotNone(rewritten)
+            proc = subprocess.run(
+                rewritten,
+                shell=True,
+                cwd=td,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("intentional failure", proc.stdout)
 
     def test_filter_output_strips_ansi_preserves_errors_and_spills_log(self):
         with tempfile.TemporaryDirectory() as td:
@@ -192,7 +248,7 @@ class TestHookEntryAdapters(unittest.TestCase):
             self.assertEqual(deny["decision"], "deny")
             self.assertIn("duplicate", deny["reason"].lower())
 
-            # Antigravity run_command rewrite (preserves prefix with --pipe and emits permissionOverrides)
+            # Antigravity run_command rewrite (defaults to `--run --` when no rtk or `rtk` when installed, emits permissionOverrides)
             p_cmd = {
                 "hookEventName": "PreToolUse",
                 "conversationId": "agy-conv",
@@ -201,7 +257,10 @@ class TestHookEntryAdapters(unittest.TestCase):
             out_cmd = hook_entry.handle_payload(p_cmd)
             self.assertEqual(out_cmd["decision"], "allow")
             self.assertIn("overwrite", out_cmd)
-            self.assertTrue(out_cmd["overwrite"]["CommandLine"].startswith("pytest tests/ 2>&1 |"))
+            rewritten_cmd = out_cmd["overwrite"]["CommandLine"]
+            self.assertTrue(
+                "--run -- pytest tests/" in rewritten_cmd or rewritten_cmd.startswith("rtk ")
+            )
             self.assertIn("permissionOverrides", out_cmd)
 
             # PreCompact event resets read_guard state so the previously blocked read is allowed again
@@ -370,6 +429,59 @@ class TestAuditTranscript(unittest.TestCase):
             card = audit_transcript.format_scan_all_scorecard(summary)
             self.assertIn("TOKEN-GUARD", card)
             self.assertIn("Sessions scanned: 2", card)
+
+
+class TestHookDaemon(unittest.TestCase):
+    def test_daemon_concurrent_requests_and_auth_token(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_dir = Path(td)
+            t = threading.Thread(
+                target=hook_daemon.serve_forever,
+                args=(state_dir, 10.0),
+                daemon=True,
+            )
+            t.start()
+
+            meta_file = hook_daemon.daemon_meta_path(state_dir)
+            deadline = time.time() + 3.0
+            while not meta_file.is_file() and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(meta_file.is_file())
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            self.assertTrue(meta.get("token"))
+
+            # Unauthenticated raw TCP client must be rejected
+            with socket.create_connection(("127.0.0.1", int(meta["port"])), timeout=1.0) as bad_sock:
+                bad_sock.sendall(b'{"__ping__": true}\n')
+                raw_reply = bad_sock.recv(4096).decode("utf-8", errors="replace")
+            self.assertIn("unauthorized", raw_reply)
+
+            # 8 concurrent authenticated requests must all succeed without blocking/timing out
+            def _ping_and_eval(idx: int):
+                f = state_dir / f"file_{idx}.py"
+                f.write_text("x = 1\n", encoding="utf-8")
+                payload = {
+                    "hookEventName": "PreToolUse",
+                    "conversationId": f"parallel-{idx}",
+                    "toolCall": {
+                        "name": "read_file",
+                        "args": {"Path": str(f), "StartLine": 1, "EndLine": 10},
+                    },
+                }
+                try:
+                    return hook_daemon.query_daemon(payload, state_dir=state_dir, timeout=1.0)
+                finally:
+                    hook_daemon.close_client_sockets()
+
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                    results = list(pool.map(_ping_and_eval, range(8)))
+                for r in results:
+                    self.assertIsNotNone(r)
+                    self.assertEqual(r["decision"], "allow")
+            finally:
+                hook_daemon.query_daemon({"__shutdown__": True}, state_dir=state_dir, timeout=1.0)
+                t.join(timeout=3.0)
 
 
 if __name__ == "__main__":

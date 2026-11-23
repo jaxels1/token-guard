@@ -23,6 +23,7 @@ git clone https://github.com/jaxels1/token-guard.git ~/.gemini/config/plugins/to
 - For Claude Code: you register the plugin via `.claude-plugin/plugin.json` (sets up `PreToolUse` for `Read` / `Bash` / `Grep` / `Glob` and `PreCompact` resetting).
 - For Cursor: you add `.cursor/hooks.json`, `skills/token-guard/`, and `scripts/` to your workspace or user config.
 - For Codex or ChatGPT Desktop App: add `skills/token-guard/` and `scripts/` to `~/.codex/skills/token-guard` and merge `hooks.json` into `~/.codex/hooks.json`.
+- Windows note: hooks invoke `python3`. If your system only exposes `python` or `py -3`, update the command in your host `hooks.json` accordingly.
 
 ## Audit your session logs
 
@@ -105,12 +106,12 @@ An audit of 63 Codex logs that include actual code development (15,024 tool call
 - Direct searches are not allowed in `node_modules`, `dist`, `.next`, lockfiles, or minified assets. Sets the `head_limit` to 80 and also limits piped results to 80 matches.
 
 ### Allowlist command filter (`scripts/cmd_filter.py`)
-- Command left unmodified at the start of the command string so allowlist prefixes match without raising permission prompts (`pytest -q tests/ 2>&1 | python3 ".../cmd_filter.py" --pipe`). If running with `allow: ["npm test", "pytest", "git diff"]` this still passes.
+- Wraps noisy commands with `python3 ".../cmd_filter.py" --run -- <cmd>` (or `--run-b64` when shell quoting is complex) so exact non-zero exit codes are preserved across POSIX `sh`, `bash`, `cmd.exe`, and PowerShell. Set `TOKEN_GUARD_REWRITE_MODE=pipe` if you prefer prefix-matching `<cmd> 2>&1 | python3 ".../cmd_filter.py" --pipe` for strict command allowlists (note: shells without `pipefail` return exit code `0` in pipe mode).
 - If `rtk` binary is available in `PATH`, delegates to `rtk`.
 - ANSI codes and successful test lines stripped. Stack traces and exit codes preserved. Full logs written to `%TEMP%/token-guard-logs/`.
 
 ### Loopback Socket Daemon (`scripts/hook_daemon.py` & `hook_entry.py`)
-- Makes a persistent background process whose purpose is to run hook modules on `127.0.0.1` (uses `TCP_NODELAY`, p50 of 1.95 ms), which closes after 30 min inactivity and will fail open if any errors.
+- Runs a multithreaded background worker on `127.0.0.1` (`TCP_NODELAY`, per-session random auth token in `daemon.json`, p50 of 1.95 ms), which closes after 30 min inactivity and fails open on any error.
 
 ### Skill (`skills/token-guard/SKILL.md`, ~309 Tokens)
 - Parallel tool calls, bounded symbolic reads, script-first bulk edits.

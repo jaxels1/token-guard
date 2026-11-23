@@ -13,22 +13,14 @@ from typing import Any
 
 from read_guard import LOCKFILE_NAMES, MINIFIED_SUFFIXES, VENDOR_DIR_SEGMENTS, append_metric, default_state_dir
 
-DEFAULT_EXCLUDE_GLOBS = [
-    "!**/node_modules/**",
-    "!**/.next/**",
-    "!**/dist/**",
-    "!**/build/**",
-    "!**/target/**",
-    "!**/.venv/**",
-    "!**/coverage/**",
-    "!**/package-lock.json",
-    "!**/yarn.lock",
-    "!**/pnpm-lock.yaml",
-    "!**/Cargo.lock",
-    "!**/*.min.js",
-    "!**/*.min.css",
-    "!**/*.bundle.js",
-    "!**/*.map",
+DEFAULT_EXCLUDE_DIRS = [
+    "node_modules",
+    ".next",
+    "dist",
+    "build",
+    "target",
+    ".venv",
+    "coverage",
 ]
 
 
@@ -97,15 +89,7 @@ def evaluate_search(
     if tool_name == "find_by_name":
         existing_excludes = args.get("Excludes")
         if not existing_excludes:
-            overwrite["Excludes"] = [
-                "node_modules",
-                ".next",
-                "dist",
-                "build",
-                "target",
-                ".venv",
-                "coverage",
-            ]
+            overwrite["Excludes"] = list(DEFAULT_EXCLUDE_DIRS)
 
     return {
         "allow": True,

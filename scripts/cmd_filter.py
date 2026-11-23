@@ -146,43 +146,55 @@ def maybe_rewrite_command(
     *,
     script_path: str | None = None,
     prefer_rtk: bool = True,
-    mode: str = "pipe",
+    mode: str | None = None,
 ) -> str | None:
     """
     Return an allowlist-friendly filtered command string if `command_line`
     is a noisy command, else None.
-    - By default (`mode="pipe"`), preserves the original command at the front:
+    - By default (`mode="run"` or `TOKEN_GUARD_REWRITE_MODE="run"`), executes via
+      `cmd_filter.py --run` (or `--run-b64` when shell quoting is complex) so exact
+      non-zero exit codes are preserved across sh, bash, cmd.exe, and PowerShell.
+    - When `mode="pipe"` (or `TOKEN_GUARD_REWRITE_MODE="pipe"`), preserves the
+      original command at the front:
         `<original_cmd> 2>&1 | python3 "<cmd_filter.py>" --pipe`
       so host prefix allowlists (`"allow": ["npm test", "pytest", "git diff"]`)
-      match cleanly without permission popups.
-    - Uses `--pipe-search` for unbounded `rg` / `grep -r` / `find .` commands to
-      exclude vendor/lockfile/minified matches and cap output at 80 lines.
-    - Reserves `--run-b64` strictly as a fallback for complex multi-statement
-      PowerShell commands when `mode="b64"` or PowerShell cmdlets are present.
+      match cleanly (note: shells without `pipefail` return the pipe's exit code).
+    - Uses `--run-search` / `--pipe-search` for unbounded `rg` / `grep -r` /
+      `find .` commands to exclude vendor/lockfile/minified matches and cap at 80 lines.
+    - Reserves `--shell pwsh --run-b64` for PowerShell cmdlets on Windows.
     """
     if os.environ.get("TOKEN_GUARD_NO_REWRITE") == "1":
         return None
     if not is_noisy_command(command_line):
         return None
 
+    effective_mode = (mode or os.environ.get("TOKEN_GUARD_REWRITE_MODE") or "run").strip().lower()
     stripped = command_line.strip()
     prefix, tail = _strip_leading_cd(stripped)
     filter_path = os.path.abspath(script_path or __file__)
+    is_search = bool(SEARCH_CMD_RE.match(tail))
 
     first_tok = tail.split()[0].lower()
-    if prefer_rtk and not SEARCH_CMD_RE.match(tail) and first_tok in RTK_SUPPORTED_PREFIXES and shutil.which("rtk"):
+    if prefer_rtk and not is_search and first_tok in RTK_SUPPORTED_PREFIXES and shutil.which("rtk"):
         return f"{prefix}rtk {tail}"
 
-    if _needs_powershell(stripped) or mode == "b64":
+    if _needs_powershell(stripped) or effective_mode == "b64":
         b64 = base64.urlsafe_b64encode(stripped.encode("utf-8")).decode("ascii")
         shell_flag = " --shell pwsh" if _needs_powershell(stripped) else ""
-        return f'python3 "{filter_path}"{shell_flag} --run-b64 {b64}'
+        search_flag = " --search" if is_search else ""
+        return f'python3 "{filter_path}"{shell_flag}{search_flag} --run-b64 {b64}'
 
-    pipe_flag = "--pipe-search" if SEARCH_CMD_RE.match(tail) else "--pipe"
-    if mode == "run" and SAFE_CLEARTEXT_TAIL_RE.match(tail):
-        return f'{prefix}python3 "{filter_path}" --run -- {tail}'
+    if effective_mode == "pipe":
+        pipe_flag = "--pipe-search" if is_search else "--pipe"
+        return f'{prefix}{tail} 2>&1 | python3 "{filter_path}" {pipe_flag}'
 
-    return f'{prefix}{tail} 2>&1 | python3 "{filter_path}" {pipe_flag}'
+    if SAFE_CLEARTEXT_TAIL_RE.match(tail):
+        run_flag = "--run-search" if is_search else "--run"
+        return f'{prefix}python3 "{filter_path}" {run_flag} -- {tail}'
+
+    b64 = base64.urlsafe_b64encode(stripped.encode("utf-8")).decode("ascii")
+    search_flag = " --search" if is_search else ""
+    return f'python3 "{filter_path}"{search_flag} --run-b64 {b64}'
 
 
 def _resolve_carriage_returns(text: str) -> str:
@@ -300,7 +312,11 @@ def filter_output(
     return result_text, meta
 
 
-def run_filtered_command(command_line: str, shell_kind: str | None = None) -> int:
+def run_filtered_command(
+    command_line: str,
+    shell_kind: str | None = None,
+    is_search: bool = False,
+) -> int:
     use_pwsh = shell_kind == "pwsh" or _needs_powershell(command_line)
     if use_pwsh and os.name == "nt":
         proc = subprocess.run(
@@ -321,11 +337,19 @@ def run_filtered_command(command_line: str, shell_kind: str | None = None) -> in
             encoding="utf-8",
             errors="replace",
         )
-    compressed, meta = filter_output(proc.stdout or "", command_line)
+    _, tail = _strip_leading_cd(command_line.strip())
+    if is_search or SEARCH_CMD_RE.match(tail):
+        from search_guard import filter_search_stdout
+
+        compressed, meta = filter_search_stdout(proc.stdout or "")
+        event_name = "search_filtered"
+    else:
+        compressed, meta = filter_output(proc.stdout or "", command_line)
+        event_name = "cmd_filtered"
     if compressed:
         print(compressed)
     _append_metric({
-        "event": "cmd_filtered",
+        "event": event_name,
         "command": command_line[:160],
         "raw_bytes": meta["raw_bytes"],
         "filtered_bytes": meta["filtered_bytes"],
@@ -348,13 +372,27 @@ def main(argv: list[str] | None = None) -> int:
         if l_idx + 1 < len(args):
             del args[l_idx : l_idx + 2]
 
+    is_search = False
+    if "--search" in args:
+        is_search = True
+        args.remove("--search")
+
     if len(args) >= 2 and args[0] == "--run-b64":
         try:
             cmd = base64.urlsafe_b64decode(args[1].encode("ascii")).decode("utf-8")
         except Exception as exc:
             print(f"token-guard invalid --run-b64 payload: {exc}", file=sys.stderr)
             return 2
-        return run_filtered_command(cmd, shell_kind=shell_kind)
+        return run_filtered_command(cmd, shell_kind=shell_kind, is_search=is_search)
+
+    if "--run-search" in args:
+        idx = args.index("--run-search")
+        rest = args[idx + 1 :]
+        if rest and rest[0] == "--":
+            rest = rest[1:]
+        if not rest:
+            return 2
+        return run_filtered_command(" ".join(rest), shell_kind=shell_kind, is_search=True)
 
     if "--run" in args:
         idx = args.index("--run")
@@ -363,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
             rest = rest[1:]
         if not rest:
             return 2
-        return run_filtered_command(" ".join(rest), shell_kind=shell_kind)
+        return run_filtered_command(" ".join(rest), shell_kind=shell_kind, is_search=is_search)
 
     if "--pipe-search" in args:
         from search_guard import filter_search_stdout

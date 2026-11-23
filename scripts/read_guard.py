@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -50,7 +51,25 @@ VENDOR_DIR_SEGMENTS = {
     "coverage",
 }
 
+BINARY_MEDIA_SUFFIXES = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".ico",
+    ".pdf",
+    ".mp4",
+    ".mov",
+    ".webm",
+    ".mp3",
+    ".wav",
+    ".ogg",
+)
+
 MAX_RANGE_SPAN = 10**12
+_STATE_LOCK = threading.Lock()
 
 
 def default_state_dir() -> Path:
@@ -151,7 +170,7 @@ def _save_state(state_path: Path, data: dict[str, Any]) -> None:
     _MEM_STATE_CACHE[str(state_path)] = data
     try:
         state_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = state_path.with_suffix(".tmp")
+        tmp_path = state_path.with_name(f"{state_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         with open(tmp_path, "w", encoding="utf-8") as fh:
             json.dump(data, fh)
         os.replace(tmp_path, state_path)
@@ -167,12 +186,13 @@ def reset_conversation_state(
     """Reset tracked read ranges for `conversation_id` on PreCompact / context summarization."""
     s_dir = Path(state_dir) if state_dir else default_state_dir()
     st_path = _state_file(s_dir, conversation_id)
-    _MEM_STATE_CACHE.pop(str(st_path), None)
-    if st_path.exists():
-        try:
-            st_path.unlink()
-        except OSError:
-            _save_state(st_path, {"files": {}})
+    with _STATE_LOCK:
+        _MEM_STATE_CACHE.pop(str(st_path), None)
+        if st_path.exists():
+            try:
+                st_path.unlink()
+            except OSError:
+                _save_state(st_path, {"files": {}})
     append_metric(s_dir, {
         "event": "compaction_reset",
         "conversation_id": conversation_id,
@@ -292,7 +312,8 @@ def evaluate_read(
                 "estimated_saved_bytes": saved,
             }
 
-        if exists:
+        is_binary_media = lower_name.endswith(BINARY_MEDIA_SUFFIXES)
+        if exists and not is_binary_media:
             if file_size > max_unbounded_bytes:
                 from outline_gen import generate_file_outline
                 outline = generate_file_outline(file_path)
@@ -343,129 +364,130 @@ def evaluate_read(
 
     now_ts = time.time()
     st_path = _state_file(s_dir, conversation_id)
-    state = _load_state(st_path)
+    with _STATE_LOCK:
+        state = _load_state(st_path)
 
-    # Reset read cache automatically when a new context compaction marker appears in the transcript
-    compaction_marker = _detect_compaction_marker(transcript_path)
-    if compaction_marker and compaction_marker != state.get("compaction_marker"):
-        state["files"] = {}
-        state["compaction_marker"] = compaction_marker
+        # Reset read cache automatically when a new context compaction marker appears in the transcript
+        compaction_marker = _detect_compaction_marker(transcript_path)
+        if compaction_marker and compaction_marker != state.get("compaction_marker"):
+            state["files"] = {}
+            state["compaction_marker"] = compaction_marker
 
-    cur_step = int(step_idx) if step_idx is not None else int(state.get("auto_step", 0)) + 1
-    state["auto_step"] = cur_step
+        cur_step = int(step_idx) if step_idx is not None else int(state.get("auto_step", 0)) + 1
+        state["auto_step"] = cur_step
 
-    entry = state["files"].get(norm)
+        entry = state["files"].get(norm)
 
-    if exists and isinstance(entry, dict):
-        same_version = entry.get("mtime_ns") == mtime_ns and entry.get("size") == file_size
-        age_steps = cur_step - int(entry.get("last_step", cur_step))
-        age_seconds = now_ts - float(entry.get("last_ts", now_ts))
-        expired_by_ttl = (max_step_age > 0 and age_steps > max_step_age) or (
-            max_age_seconds > 0 and age_seconds > max_age_seconds
-        )
-        if expired_by_ttl:
-            entry = None
-            state["files"].pop(norm, None)
+        if exists and isinstance(entry, dict):
+            same_version = entry.get("mtime_ns") == mtime_ns and entry.get("size") == file_size
+            age_steps = cur_step - int(entry.get("last_step", cur_step))
+            age_seconds = now_ts - float(entry.get("last_ts", now_ts))
+            expired_by_ttl = (max_step_age > 0 and age_steps > max_step_age) or (
+                max_age_seconds > 0 and age_seconds > max_age_seconds
+            )
+            if expired_by_ttl:
+                entry = None
+                state["files"].pop(norm, None)
 
-        if entry and same_version:
-            # Escape hatch: if the agent immediately retries the exact same range after a block
-            # (e.g. because context compaction dropped the raw lines), allow it on the 2nd attempt.
-            if entry.get("last_blocked_range") == [req_start, req_end]:
-                entry["last_blocked_range"] = None
-                entry["last_step"] = cur_step
-                entry["last_ts"] = now_ts
-                _save_state(st_path, state)
-                return {
-                    "allow": True,
-                    "code": "compaction-retry-allowed",
-                    "reason": "Allowed explicit retry after duplicate block.",
-                    "estimated_saved_bytes": 0,
-                }
-
-            for prev_start, prev_end in entry.get("ranges", []):
-                if prev_start <= req_start and req_end <= prev_end:
-                    saved = _estimate_range_bytes(file_path, req_start, req_end, file_size)
-                    entry["last_blocked_range"] = [req_start, req_end]
-                    _save_state(st_path, state)
-                    append_metric(s_dir, {
-                        "event": "read_blocked",
-                        "code": "duplicate-read",
-                        "path": norm,
-                        "range": [req_start, req_end],
-                        "saved_bytes": saved,
-                    })
-                    span_label = (
-                        f"lines {req_start}-{req_end}"
-                        if not unbounded
-                        else "full file"
-                    )
-                    return {
-                        "allow": False,
-                        "code": "duplicate-read",
-                        "reason": (
-                            f"token-guard blocked duplicate read of unchanged {os.path.basename(file_path)} ({span_label} already read). "
-                            "Reuse earlier context, target an unread range, or retry once if prior context was compacted."
-                        ),
-                        "estimated_saved_bytes": saved,
-                    }
-
-            # Partial overlap trimming for bounded reads (e.g., 1-100 already read, now requesting 50-150 -> trim to 101-150)
-            if not unbounded and start_line is not None and end_line is not None:
-                trimmed_start = req_start
-                trimmed_end = req_end
-                for prev_start, prev_end in entry.get("ranges", []):
-                    if prev_start <= trimmed_start <= prev_end < trimmed_end:
-                        trimmed_start = prev_end + 1
-                    elif trimmed_start < prev_start <= trimmed_end <= prev_end:
-                        trimmed_end = prev_start - 1
-
-                if (trimmed_start, trimmed_end) != (req_start, req_end) and trimmed_start <= trimmed_end:
-                    overlap_lines = (req_end - req_start + 1) - (trimmed_end - trimmed_start + 1)
-                    saved = max(256, overlap_lines * 45)
-                    append_metric(s_dir, {
-                        "event": "read_trimmed",
-                        "code": "partial-overlap-trimmed",
-                        "path": norm,
-                        "original_range": [req_start, req_end],
-                        "trimmed_range": [trimmed_start, trimmed_end],
-                        "saved_bytes": saved,
-                    })
-                    prev_ranges = entry.get("ranges", [])
-                    state["files"][norm] = {
-                        "mtime_ns": mtime_ns,
-                        "size": file_size,
-                        "ranges": _merge_ranges([*prev_ranges, [trimmed_start, trimmed_end]]),
-                        "last_step": cur_step,
-                        "last_ts": now_ts,
-                        "last_blocked_range": None,
-                    }
+            if entry and same_version:
+                # Escape hatch: if the agent immediately retries the exact same range after a block
+                # (e.g. because context compaction dropped the raw lines), allow it on the 2nd attempt.
+                if entry.get("last_blocked_range") == [req_start, req_end]:
+                    entry["last_blocked_range"] = None
+                    entry["last_step"] = cur_step
+                    entry["last_ts"] = now_ts
                     _save_state(st_path, state)
                     return {
                         "allow": True,
-                        "code": "partial-overlap-trimmed",
-                        "reason": f"Trimmed already-read lines to {trimmed_start}-{trimmed_end}.",
-                        "overwrite_range": [trimmed_start, trimmed_end],
-                        "estimated_saved_bytes": saved,
+                        "code": "compaction-retry-allowed",
+                        "reason": "Allowed explicit retry after duplicate block.",
+                        "estimated_saved_bytes": 0,
                     }
 
-    # Record allowed read
-    if exists:
-        prev_ranges = (
-            entry.get("ranges", [])
-            if isinstance(entry, dict)
-            and entry.get("mtime_ns") == mtime_ns
-            and entry.get("size") == file_size
-            else []
-        )
-        new_ranges = _merge_ranges([*prev_ranges, [req_start, req_end]])
-        state["files"][norm] = {
-            "mtime_ns": mtime_ns,
-            "size": file_size,
-            "ranges": new_ranges,
-            "last_step": cur_step,
-            "last_ts": now_ts,
-            "last_blocked_range": None,
-        }
-        _save_state(st_path, state)
+                for prev_start, prev_end in entry.get("ranges", []):
+                    if prev_start <= req_start and req_end <= prev_end:
+                        saved = _estimate_range_bytes(file_path, req_start, req_end, file_size)
+                        entry["last_blocked_range"] = [req_start, req_end]
+                        _save_state(st_path, state)
+                        append_metric(s_dir, {
+                            "event": "read_blocked",
+                            "code": "duplicate-read",
+                            "path": norm,
+                            "range": [req_start, req_end],
+                            "saved_bytes": saved,
+                        })
+                        span_label = (
+                            f"lines {req_start}-{req_end}"
+                            if not unbounded
+                            else "full file"
+                        )
+                        return {
+                            "allow": False,
+                            "code": "duplicate-read",
+                            "reason": (
+                                f"token-guard blocked duplicate read of unchanged {os.path.basename(file_path)} ({span_label} already read). "
+                                "Reuse earlier context, target an unread range, or retry once if prior context was compacted."
+                            ),
+                            "estimated_saved_bytes": saved,
+                        }
+
+                # Partial overlap trimming for bounded reads (e.g., 1-100 already read, now requesting 50-150 -> trim to 101-150)
+                if not unbounded and start_line is not None and end_line is not None:
+                    trimmed_start = req_start
+                    trimmed_end = req_end
+                    for prev_start, prev_end in entry.get("ranges", []):
+                        if prev_start <= trimmed_start <= prev_end < trimmed_end:
+                            trimmed_start = prev_end + 1
+                        elif trimmed_start < prev_start <= trimmed_end <= prev_end:
+                            trimmed_end = prev_start - 1
+
+                    if (trimmed_start, trimmed_end) != (req_start, req_end) and trimmed_start <= trimmed_end:
+                        overlap_lines = (req_end - req_start + 1) - (trimmed_end - trimmed_start + 1)
+                        saved = max(256, overlap_lines * 45)
+                        append_metric(s_dir, {
+                            "event": "read_trimmed",
+                            "code": "partial-overlap-trimmed",
+                            "path": norm,
+                            "original_range": [req_start, req_end],
+                            "trimmed_range": [trimmed_start, trimmed_end],
+                            "saved_bytes": saved,
+                        })
+                        prev_ranges = entry.get("ranges", [])
+                        state["files"][norm] = {
+                            "mtime_ns": mtime_ns,
+                            "size": file_size,
+                            "ranges": _merge_ranges([*prev_ranges, [trimmed_start, trimmed_end]]),
+                            "last_step": cur_step,
+                            "last_ts": now_ts,
+                            "last_blocked_range": None,
+                        }
+                        _save_state(st_path, state)
+                        return {
+                            "allow": True,
+                            "code": "partial-overlap-trimmed",
+                            "reason": f"Trimmed already-read lines to {trimmed_start}-{trimmed_end}.",
+                            "overwrite_range": [trimmed_start, trimmed_end],
+                            "estimated_saved_bytes": saved,
+                        }
+
+        # Record allowed read
+        if exists:
+            prev_ranges = (
+                entry.get("ranges", [])
+                if isinstance(entry, dict)
+                and entry.get("mtime_ns") == mtime_ns
+                and entry.get("size") == file_size
+                else []
+            )
+            new_ranges = _merge_ranges([*prev_ranges, [req_start, req_end]])
+            state["files"][norm] = {
+                "mtime_ns": mtime_ns,
+                "size": file_size,
+                "ranges": new_ranges,
+                "last_step": cur_step,
+                "last_ts": now_ts,
+                "last_blocked_range": None,
+            }
+            _save_state(st_path, state)
 
     return {"allow": True, "code": "ok", "reason": "", "estimated_saved_bytes": 0}

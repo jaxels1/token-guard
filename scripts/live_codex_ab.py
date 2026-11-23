@@ -35,11 +35,10 @@ def _setup_workspace(ws: Path, enable_token_guard: bool) -> None:
     for idx in range(1, 19):
         fn = f"compute_fee_tier_{idx:02d}"
         mult = "0.04" if idx == 14 else f"{0.01 * idx:.2f}"
-        comment = "  # BUG: expected multiplier is 0.05" if idx == 14 else ""
         lines.append(f"def {fn}(amount: float) -> float:")
         for step in range(1, 28):
             lines.append(f"    adj_{step} = amount + {step * 0.5}")
-        lines.append(f"    return round(amount * {mult}, 2){comment}")
+        lines.append(f"    return round(amount * {mult}, 2)")
         lines.append("")
     (ws / "billing_engine.py").write_text("\n".join(lines), encoding="utf-8")
 
@@ -196,34 +195,13 @@ def main() -> int:
         print("codex.exe not found", file=sys.stderr)
         return 2
 
-    tasks = [
-        {
-            "id": "T1_large_file_bug_lookup",
-            "prompt": (
-                "In billing_engine.py, inspect compute_fee_tier_14 and reply in ONE short sentence "
-                "stating the exact return multiplier currently in compute_fee_tier_14 and what the comment says it should be. "
-                "Do not edit any files."
-            ),
-            "expect_substrings": ["0.04", "0.05"],
-        },
-        {
-            "id": "T2_noisy_test_suite_diagnosis",
-            "prompt": (
-                "Run `python3 -m unittest` or `pytest`? No, run `python3 run_suite.py` (or if token-guard is active, pipe noisy output through `python3 run_suite.py | python3 \""
-                + str(REPO_ROOT / "scripts" / "cmd_filter.py")
-                + "\" --pipe` when token-guard skill is loaded) and reply in ONE short sentence stating which test failed and the expected vs actual numbers."
-            ),
-            "expect_substrings": ["50.0", "40.0"],
-        },
-    ]
-
-    # Wait: make Task 1 & Task 2 prompts 100% identical between OFF and ON for a fair A/B test!
+    # Make Task 1 & Task 2 prompts 100% identical between OFF and ON for a fair A/B test
     fair_tasks = [
         {
             "id": "T1_large_file_bug_lookup",
             "prompt": (
-                "In billing_engine.py, find `compute_fee_tier_14` and reply in ONE short sentence "
-                "stating the current multiplier and the expected multiplier from its comment. Do not edit files."
+                "In billing_engine.py and test_billing.py, find `compute_fee_tier_14` and reply in ONE short sentence "
+                "stating its current multiplier and what multiplier `test_billing.py` expects. Do not edit files."
             ),
             "expect": ("0.04", "0.05"),
         },
