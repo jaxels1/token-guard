@@ -6,6 +6,8 @@
 
 **Token Guard (`token-guard`)** is a cross-agent plugin and `SKILL.md` bundle built for **Antigravity, Claude Code, Cursor, OpenAI Codex, and Gemini CLI**. Instead of optimizing only assistant wording (like `caveman`) or only shell stdout (like `RTK`), it enforces savings across all 5 layers of an agent session without breaking your KV prompt prefix cache.
 
+![token-guard skill demo](./assets/demo.gif)
+
 ## Quick Install
 
 ### Cross-Agent Skill (`skills.sh`)
