@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="google-site-verification" content="y7ZuxAixjw9r6ZhMoGCU6fub8jL_M6K25ZY0gTw0VNg" />
+    <title>Token Guard (token-guard) — Cross-Agent Token Optimizer Plugin &amp; Skill</title>
+    <meta
+      name="description"
+      content="Token Guard (token-guard) is a zero-dependency cross-agent plugin and SKILL.md for Antigravity, Claude Code, Cursor, Codex, and Gemini CLI—deduplicating file reads, compressing noisy test/build stdout with raw log spill, and auditing net token savings."
+    />
+    <link rel="canonical" href="https://jaxels1.github.io/token-guard/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Token Guard — Cross-Agent Token &amp; AI-Usage Optimizer" />
+    <meta
+      property="og:description"
+      content="Save tokens across Antigravity, Claude Code, Cursor, and Codex with deterministic read deduplication, stdout compression, and cache-safe SKILL.md rules."
+    />
+    <meta property="og:url" content="https://jaxels1.github.io/token-guard/" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "token-guard",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "macOS, Windows, Linux",
+        "url": "https://jaxels1.github.io/token-guard/",
+        "codeRepository": "https://github.com/jaxels1/token-guard",
+        "description": "Cross-agent token & AI-usage optimizer combining duplicate/unbounded file read guards, noisy command stdout compression, cache-safe SKILL.md rules, and JSONL transcript auditing."
+      }
+    </script>
+    <style>
+      :root {
+        --bg: #080b0f;
+        --panel: #10161d;
+        --text: #f1f5f9;
+        --muted: #94a3b8;
+        --accent: #38bdf8;
+        --warm: #e84a27;
+        --border: rgba(148, 163, 184, 0.2);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.55;
+      }
+      .wrap { max-width: 920px; margin: 0 auto; padding: 56px 24px 88px; }
+      header {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 16px; padding-bottom: 32px; border-bottom: 1px solid var(--border);
+      }
+      .brand { display: flex; align-items: center; gap: 12px; font-weight: 700; font-size: 18px; }
+      .cta {
+        padding: 10px 18px; border-radius: 999px; background: var(--accent);
+        color: #061018; text-decoration: none; font-weight: 700; font-size: 14px;
+      }
+      h1 { font-size: clamp(34px, 5vw, 52px); line-height: 1.06; letter-spacing: -0.03em; margin: 38px 0 16px; }
+      .lead { font-size: 18px; max-width: 68ch; color: var(--muted); margin: 0 0 26px; }
+      pre {
+        background: var(--panel); border: 1px solid var(--border); color: var(--text);
+        padding: 16px 20px; border-radius: 12px; overflow-x: auto; font-size: 14px;
+      }
+      .grid {
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 16px; margin: 32px 0;
+      }
+      .card {
+        padding: 20px; border-radius: 14px; border: 1px solid var(--border); background: var(--panel);
+      }
+      .card h3 { margin: 0 0 8px; font-size: 17px; color: var(--accent); }
+      .card p { margin: 0; font-size: 14.5px; color: var(--muted); }
+      h2 { font-size: 26px; letter-spacing: -0.02em; margin: 44px 0 14px; }
+      footer {
+        margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--border);
+        font-size: 14px; color: var(--muted);
+      }
+      footer a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <header>
+        <div class="brand">
+          <img src="https://raw.githubusercontent.com/jaxels1/token-guard/main/assets/logo.svg" alt="token-guard logo" width="36" height="36" />
+          <span>token-guard</span>
+        </div>
+        <a class="cta" href="https://github.com/jaxels1/token-guard">View on GitHub</a>
+      </header>
+
+      <h1>5-layer token defense without breaking your KV cache.</h1>
+      <p class="lead">
+        <strong>Token Guard (<code>token-guard</code>)</strong> equips Antigravity, Claude Code,
+        Cursor, Codex, and Gemini CLI with deterministic read deduplication, noisy command
+        output compression, a cache-safe <code>&lt;350</code>-token skill, and a JSONL transcript auditor.
+      </p>
+
+      <pre><code>npx skills add jaxels1/token-guard</code></pre>
+
+      <h2>5 Defense Layers</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>read_guard.py</h3>
+          <p>Blocks unchanged duplicate reads, covered subranges, lockfiles, minified bundles, and <code>&gt;500</code>-line unbounded reads.</p>
+        </div>
+        <div class="card">
+          <h3>cmd_filter.py</h3>
+          <p>Compresses verbose test, build, lint, and git output with exact exit codes and full raw temp-log spills.</p>
+        </div>
+        <div class="card">
+          <h3>Cache-Safe SKILL.md</h3>
+          <p>Under 350 tokens with parallel tool batching, symbol-first navigation, and zero per-turn <code>PreInvocation</code> cache invalidation.</p>
+        </div>
+        <div class="card">
+          <h3>audit_transcript.py</h3>
+          <p>Parses Antigravity &amp; Claude Code JSONL transcripts to quantify duplicate reads blocked and net tokens saved.</p>
+        </div>
+      </div>
+
+      <footer>
+        Open-source on <a href="https://github.com/jaxels1/token-guard">github.com/jaxels1/token-guard</a>
+        &middot; Back to <a href="https://jaxels1.github.io/">jaxels hub</a>.
+      </footer>
+    </main>
+  </body>
+</html>

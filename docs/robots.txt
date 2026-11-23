@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://jaxels1.github.io/token-guard/sitemap.xml

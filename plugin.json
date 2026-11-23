@@ -1,0 +1,18 @@
+{
+  "name": "token-guard",
+  "displayName": "Token Guard",
+  "version": "1.0.0",
+  "description": "Cross-agent token & AI-usage optimizer: blocks duplicate/unbounded file reads, compresses noisy command output with raw log spill, and ships a cache-safe <350-token skill plus transcript auditor.",
+  "author": {
+    "name": "jaxels1",
+    "url": "https://github.com/jaxels1"
+  },
+  "homepage": "https://jaxels1.github.io/token-guard/",
+  "repository": "https://github.com/jaxels1/token-guard",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Audit our latest agent transcript with token-guard and summarize net tokens saved",
+    "Work in this repo with token-guard active: block duplicate reads and noisy test logs",
+    "Show how token-guard compares against caveman, RTK, and AST-only MCPs"
+  ]
+}

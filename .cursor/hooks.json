@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "matcher": "Read|Shell",
+        "command": "python3 scripts/hook_entry.py",
+        "timeout": 10
+      }
+    ]
+  }
+}

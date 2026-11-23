@@ -1,0 +1,16 @@
+{
+  "token-guard": {
+    "PreToolUse": [
+      {
+        "matcher": "read_file|view_file|run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 scripts/hook_entry.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
