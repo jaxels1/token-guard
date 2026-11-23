@@ -27,31 +27,35 @@ git clone https://github.com/jaxels1/token-guard.git ~/.gemini/config/plugins/to
 
 ## Audit your session logs
 
-You can run a quick check to see the context you wasted on useless stuff like double reading or noisy CLI output in your existing agent chatlogs:
+You can run a quick retrospective scan on your existing agent chatlogs to get an upper-bound estimate (`bytes / 4`, before any rebound reads) of context spent on duplicate reads and noisy CLI output:
 
 ```bash
 python3 scripts/audit_transcript.py --scan-all
 ```
 
-Here's an example output across 75 local sessions:
-- Codex: 15,024 calls, 53 sessions which is ~14.75M tokens
-- Antigravity: 1,143 calls, 22 sessions which is ~33,825 tokens
-- 2,964 double reads of identical files stopped before tokens are wasted
-- 0 successful lockfile/bundle reads without bounds
+Here's an example scan across 75 local sessions:
+- Codex: 15,024 calls, 53 sessions (~14.75M estimated tool-output tokens)
+- Antigravity: 1,143 calls, 22 sessions (~33,825 estimated tool-output tokens)
+- 2,964 duplicate reads of unchanged files detected in past logs
+- 0 unbounded lockfile/bundle reads detected in that sample
 - 45.42 MB reduced to 8.76 MB from noisy CLI/test outputs
-- KV prefix cache hit rate: pretty good 97.8% (1.19B / 1.22B tokens)
-- Recoverable context waste: 56.39 MB, which is roughly 14.78M tokens, -55.7% of new uncached token burn.
+- KV prefix cache hit rate: 97.8% (1.19B / 1.22B tokens)
+- Estimated recoverable tool-output upper bound: 56.39 MB (~14.78M tokens, ~55.7% of raw uncached tool-output burn in those sessions).
 
 ## Benchmark
 
-Shown here are 3 different benchmarks to separate live model performance (incl. rebound tool calls) from replayed logs.
+**What to expect in practice:**
+- On short, clean 2–5 turn tasks over small files, `token-guard` saves very little (and loading `SKILL.md` adds ~309 tokens to the prompt prefix, cached after turn 1).
+- On longer or noisier coding sessions (verbose test/build logs, >500-line files, monorepo searches, or repeated unchanged reads), realistic net input savings are roughly **13–35%**, depending on how much of the session is tool-output noise.
 
-### `gpt-6.1-terra` benchmark (A/B, `python3 scripts/live_codex_ab.py`)
+The 3 measurements below separate a small live LLM sanity check, a synthetic stress test of the hook/filter code, and a retrospective log replay.
 
-Selected tasks run using `gpt-6.1-terra` in Codex with token-guard enabled versus the same task with token-guard disabled (`codex.exe exec -m gpt-6.1-terra -c model_reasoning_effort="low" --ephemeral --json`).
+### Small Live A/B Sanity Check (2 synthetic tasks, `python3 scripts/live_codex_ab.py`)
 
-- Task 1: Identify a hidden off-by-one error in a fee multiplier within a 560-line Python script called `billing_engine.py`.
-- Task 2: Run 140 testing cases with `test_billing.py` and find the failing assertion.
+This is a **2-task synthetic sanity check** (not a full SWE-bench evaluation) run with `gpt-6.1-terra` in Codex with `token-guard` enabled vs. disabled (`codex.exe exec -m gpt-6.1-terra -c model_reasoning_effort="low" --ephemeral --json`) to verify real model behavior, exit accuracy, and prompt-cache warm-up.
+
+- Task 1: Identify an off-by-one fee multiplier bug in a 560-line Python script (`billing_engine.py`) against `test_billing.py`.
+- Task 2: Run 140 test cases with `test_billing.py` and find the failing assertion.
 
 | (`gpt-6.1-terra`) Metric | No Token Guard | With Token Guard | Delta |
 | :--- | :--- | :--- | :--- |
@@ -66,31 +70,31 @@ Selected tasks run using `gpt-6.1-terra` in Codex with token-guard enabled versu
 | (T1 & T2) Total tool output size | 31,605 Bytes | 6,868 Bytes | 78.3% reduction |
 | Combined (T1 + T2) total input tokens | 150,091 | 129,815 | -13.5% (-20,276 tok) |
 
-Note on T1 cache: With host skills enabled (`features.skip_host_skill_discovery=false`), the user's `~/.codex/skills` directory is automatically mounted (~7.2k tokens). In turn 1, uncached tokens increased from 2,783 (with previous prefix) to 10,040 (as new skills mounted). Once the prefix warmed up (T2), total input tokens and also new uncached tokens dropped by 36.4% and 18.2%.
+Note on T1 cache: With host skills enabled (`features.skip_host_skill_discovery=false`), the `~/.codex/skills` directory is mounted (~7.2k tokens in that test environment). In T1, uncached tokens increased from 2,783 to 10,040 on cold prefix mount. Once the prefix warmed up in T2, total input tokens dropped by 36.4% and new uncached tokens dropped by 18.2%.
 
-### Deterministic Task Benchmark (24 tasks, `python3 scripts/ab_benchmark.py`)
+### Synthetic Hook & Filter Stress Test (24 fixtures, `python3 scripts/ab_benchmark.py`)
 
-24 tasks are run (`large_file_bugfix`, `multi_read_refactor`, `monorepo_search_audit`, `compaction_recovery`) in a fixture project. This benchmark counts the rebound tool calls made before and after outline blocks.
+This is a **deterministic simulation (not an LLM benchmark)** calling `handle_payload()` and `filter_output()` directly against 24 worst-case synthetic fixtures (`large_file_bugfix`, `multi_read_refactor`, `monorepo_search_audit`, `compaction_recovery` — e.g., 1,800-line `node_modules` `rg` dumps, lockfiles, and repeated full-file reads) to verify hook logic, rebound slice reads, and daemon latency. Do not expect `-95%` in real coding sessions — that number only reflects synthetic worst-case fixtures.
 
-| Metric | Baseline | w/ Token Guard | Delta |
+| Metric | Baseline Fixture | w/ Token Guard | Delta |
 | :--- | :--- | :--- | :--- |
-| Task complete | 24 / 24 (100%) | 24 / 24 (100%) | 0% accuracy loss |
-| New uncached tokens including rebound reads | 443,112 | 22,292 | 95.0% reduction (420,820 tokens) |
-| Persistent hook (`hook_daemon.py`) latency | n/a | p50 1.95ms (Average 3.33ms) | loopback socket, Win |
-| Tool calls per task (with 6 rebound read slices) | 3.25 (78 total) | 3.25 (78 total) | Tool outline means no grep loops |
+| Fixture checks passed | 24 / 24 (100%) | 24 / 24 (100%) | 0% accuracy loss |
+| Simulated uncached tokens (incl. 6 rebound slice reads) | 443,112 | 22,202 | -95.0% synthetic worst-case (420,910 tok) |
+| Persistent hook (`hook_daemon.py`) latency | n/a | p50 1.84ms (Average 3.24ms) | loopback socket, Win |
+| Tool calls per task (with 6 rebound read slices) | 3.25 (78 total) | 3.25 (78 total) | Outline gives target line range |
 
-### Log Benchmark (`python3 scripts/audit_transcript.py`)
+### Retrospective Log Replay (`python3 scripts/audit_transcript.py`)
 
-An audit of 63 Codex logs that include actual code development (15,024 tool calls, 561 turns) and one Antigravity session with 610 turns and 694 tool calls.
+Token counts below are `bytes / 4` upper-bound estimates from replaying 63 historical Codex logs (15,024 tool calls, 561 turns) and one 610-turn Antigravity session (694 tool calls), not a live A/B run.
 
 | Metric | 63 Codex Logs | 610-turn Antigravity log |
 | :--- | :--- | :--- |
 | Turns / tool calls | 561 turns / 15,024 | 610 turns / 694 calls |
 | Reduction of noisy tool command output | 47.61MB reduced to 9.17MB (80.7%) | 11 noisy commands wrapped |
-| Double reads of identical files | 2,951 (20.56MB) | 7 reads |
-| Total recoverable payload | 59.00MB (14.75M tokens) | 63.3KB (15,825 tokens) |
+| Duplicate reads of unchanged files | 2,951 (20.56MB) | 7 reads |
+| Estimated recoverable upper bound (`bytes / 4`) | 59.00MB (~14.75M tokens) | 63.3KB (~15,825 tokens) |
 | KV prefix cache hit rate | 97.8% (1.190B of 1.217B) | 100% prefix safe |
-| Recoverable proportion of new uncached tokens | 55.5% (14.75M / 26.56M) | ~2.25x more quota |
+| Share of raw uncached tokens in those logs | 55.5% upper bound (14.75M / 26.56M) | n/a (63.3KB recoverable) |
 
 ## Operation
 
