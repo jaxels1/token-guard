@@ -34,8 +34,19 @@ KEEP_LINE_RE = re.compile(
     re.I,
 )
 
-# Never rewrite commands containing chaining, pipes, redirects, or command substitution
-UNSAFE_SHELL_TOKENS = ("&&", "||", ";", "|", ">", "<", "$(", "`", "\n")
+# Never rewrite commands containing pipes, redirects, backgrounding, or subshells
+UNSAFE_SHELL_TOKENS = ("||", "|", ">", "<", "$(", "`", "\n")
+
+# Match a single optional leading cd / Set-Location / pushd before the actual command
+LEADING_CD_RE = re.compile(
+    r"^\s*(?:(?:cd|pushd|Set-Location|sl)\s+(?:\"[^\"]+\"|'[^']+'|[^;&|]+?)\s*(?:&&|;)\s*)(.+)$",
+    re.I,
+)
+
+POWERSHELL_HINT_RE = re.compile(
+    r"(?:\b(?:Set-Location|Get-ChildItem|Get-Item|Get-Content|Invoke-WebRequest|Write-Output|Remove-Item|Copy-Item|New-Item|Select-Object|Where-Object)\b|\$env:|\$LASTEXITCODE)",
+    re.I,
+)
 
 NOISY_CMD_REGEXES = (
     re.compile(r"^(?:py\.?test|pytest)\b", re.I),
@@ -88,6 +99,16 @@ def _append_metric(record: dict) -> None:
         pass
 
 
+def _strip_leading_cd(cmd: str) -> tuple[str, str]:
+    """Split optional `cd <dir> &&` or `Set-Location <dir>;` prefix from the main command."""
+    m = LEADING_CD_RE.match(cmd)
+    if not m:
+        return "", cmd.strip()
+    tail = m.group(1).strip()
+    prefix = cmd[: m.start(1)]
+    return prefix, tail
+
+
 def is_noisy_command(command_line: str) -> bool:
     cmd = (command_line or "").strip()
     if not cmd:
@@ -97,11 +118,20 @@ def is_noisy_command(command_line: str) -> bool:
         return False
     if any(tok in cmd for tok in UNSAFE_SHELL_TOKENS):
         return False
-    if re.match(r"^git\s+(?:log|diff)\b", cmd, re.I) and (
-        "--stat" in cmd or "--name-only" in cmd or "--oneline" in cmd
+
+    _, tail = _strip_leading_cd(cmd)
+    # Reject multiple chained commands beyond a single leading cd / Set-Location
+    if "&&" in tail or ";" in tail:
+        return False
+    if re.match(r"^git\s+(?:log|diff)\b", tail, re.I) and (
+        "--stat" in tail or "--name-only" in tail or "--oneline" in tail
     ):
         return False
-    return any(rx.match(cmd) for rx in NOISY_CMD_REGEXES)
+    return any(rx.match(tail) for rx in NOISY_CMD_REGEXES)
+
+
+def _needs_powershell(cmd: str) -> bool:
+    return os.name == "nt" and bool(POWERSHELL_HINT_RE.search(cmd))
 
 
 def maybe_rewrite_command(
@@ -110,18 +140,20 @@ def maybe_rewrite_command(
     script_path: str | None = None,
     prefer_rtk: bool = True,
 ) -> str | None:
-    """Return filtered command string if `command_line` is a noisy single command, else None."""
+    """Return filtered command string if `command_line` is a noisy command, else None."""
     if not is_noisy_command(command_line):
         return None
 
     stripped = command_line.strip()
-    first_tok = stripped.split()[0].lower()
-    if prefer_rtk and first_tok in RTK_SUPPORTED_PREFIXES and shutil.which("rtk"):
-        return f"rtk {stripped}"
+    prefix, tail = _strip_leading_cd(stripped)
+    first_tok = tail.split()[0].lower()
+    if not prefix and prefer_rtk and first_tok in RTK_SUPPORTED_PREFIXES and shutil.which("rtk"):
+        return f"rtk {tail}"
 
     filter_path = os.path.abspath(script_path or __file__)
     b64 = base64.urlsafe_b64encode(stripped.encode("utf-8")).decode("ascii")
-    return f'python3 "{filter_path}" --run-b64 {b64}'
+    shell_flag = " --shell pwsh" if _needs_powershell(stripped) else ""
+    return f'python3 "{filter_path}"{shell_flag} --run-b64 {b64}'
 
 
 def _resolve_carriage_returns(text: str) -> str:
@@ -239,16 +271,27 @@ def filter_output(
     return result_text, meta
 
 
-def run_filtered_command(command_line: str) -> int:
-    proc = subprocess.run(
-        command_line,
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+def run_filtered_command(command_line: str, shell_kind: str | None = None) -> int:
+    use_pwsh = shell_kind == "pwsh" or _needs_powershell(command_line)
+    if use_pwsh and os.name == "nt":
+        proc = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", command_line],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    else:
+        proc = subprocess.run(
+            command_line,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
     compressed, meta = filter_output(proc.stdout or "", command_line)
     if compressed:
         print(compressed)
@@ -264,14 +307,21 @@ def run_filtered_command(command_line: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = argv if argv is not None else sys.argv[1:]
+    args = list(argv if argv is not None else sys.argv[1:])
+    shell_kind: str | None = None
+    if "--shell" in args:
+        s_idx = args.index("--shell")
+        if s_idx + 1 < len(args):
+            shell_kind = args[s_idx + 1]
+            del args[s_idx : s_idx + 2]
+
     if len(args) >= 2 and args[0] == "--run-b64":
         try:
             cmd = base64.urlsafe_b64decode(args[1].encode("ascii")).decode("utf-8")
         except Exception as exc:
             print(f"token-guard invalid --run-b64 payload: {exc}", file=sys.stderr)
             return 2
-        return run_filtered_command(cmd)
+        return run_filtered_command(cmd, shell_kind=shell_kind)
 
     if "--run" in args:
         idx = args.index("--run")
@@ -280,7 +330,7 @@ def main(argv: list[str] | None = None) -> int:
             rest = rest[1:]
         if not rest:
             return 2
-        return run_filtered_command(" ".join(rest))
+        return run_filtered_command(" ".join(rest), shell_kind=shell_kind)
 
     raw = sys.stdin.read()
     compressed, _ = filter_output(raw)

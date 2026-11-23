@@ -45,8 +45,13 @@ class TestReadGuard(unittest.TestCase):
         r3 = read_guard.evaluate_read("conv-1", str(target), 20, 40, state_dir=self.state_dir)
         self.assertFalse(r3["allow"])
 
+        # Partial overlap (50-120 overlaps 10-80) -> allowed with trimmed overwrite_range [81, 120]
+        r_partial = read_guard.evaluate_read("conv-1", str(target), 50, 120, state_dir=self.state_dir)
+        self.assertTrue(r_partial["allow"])
+        self.assertEqual(r_partial.get("overwrite_range"), [81, 120])
+
         # Disjoint range allowed
-        r4 = read_guard.evaluate_read("conv-1", str(target), 100, 150, state_dir=self.state_dir)
+        r4 = read_guard.evaluate_read("conv-1", str(target), 130, 150, state_dir=self.state_dir)
         self.assertTrue(r4["allow"])
 
         # Modify file -> invalidates cache so 10-80 is allowed again
@@ -95,7 +100,15 @@ class TestCmdFilter(unittest.TestCase):
         self.assertIsNotNone(rewritten)
         self.assertIn("--run-b64", rewritten)
 
-        # Pipelines & chains must not be rewritten
+        # Leading cd / Set-Location before a noisy command MUST be detected and rewritten
+        cd_cmd = cmd_filter.maybe_rewrite_command('cd /repo && pytest -q', prefer_rtk=False)
+        self.assertIsNotNone(cd_cmd)
+        pwsh_cmd = cmd_filter.maybe_rewrite_command('Set-Location "C:\\repo"; python3 -m unittest', prefer_rtk=False)
+        self.assertIsNotNone(pwsh_cmd)
+        if os.name == "nt":
+            self.assertIn("--shell pwsh", pwsh_cmd)
+
+        # Multi-step pipelines & arbitrary chains must still not be rewritten
         self.assertIsNone(cmd_filter.maybe_rewrite_command("pytest && echo done"))
         self.assertIsNone(cmd_filter.maybe_rewrite_command("git log | head -n 5"))
         self.assertIsNone(cmd_filter.maybe_rewrite_command("git log --oneline -n 10"))

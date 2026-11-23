@@ -118,6 +118,13 @@ def handle_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
         if not res.get("allow", True):
             return format_deny(host, res.get("reason") or "Blocked by token-guard read_guard")
+        if res.get("overwrite_range"):
+            new_start, new_end = res["overwrite_range"]
+            if "StartLine" in args or "EndLine" in args or host == "antigravity":
+                ov = {"StartLine": new_start, "EndLine": new_end}
+            else:
+                ov = {"offset": new_start, "limit": max(1, new_end - new_start + 1)}
+            return format_allow(host, overwrite=ov, orig_args=args)
         return format_allow(host)
 
     if norm_tool in ("run_command", "Bash", "Shell", "run_shell_command"):

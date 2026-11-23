@@ -310,6 +310,42 @@ def evaluate_read(
                         "estimated_saved_bytes": saved,
                     }
 
+            # Partial overlap trimming for bounded reads (e.g., 1-100 already read, now requesting 50-150 -> trim to 101-150)
+            if not unbounded and start_line is not None and end_line is not None:
+                trimmed_start = req_start
+                trimmed_end = req_end
+                for prev_start, prev_end in entry.get("ranges", []):
+                    if prev_start <= trimmed_start <= prev_end < trimmed_end:
+                        trimmed_start = prev_end + 1
+                    elif trimmed_start < prev_start <= trimmed_end <= prev_end:
+                        trimmed_end = prev_start - 1
+
+                if (trimmed_start, trimmed_end) != (req_start, req_end) and trimmed_start <= trimmed_end:
+                    overlap_lines = (req_end - req_start + 1) - (trimmed_end - trimmed_start + 1)
+                    saved = max(256, overlap_lines * 45)
+                    append_metric(s_dir, {
+                        "event": "read_trimmed",
+                        "code": "partial-overlap-trimmed",
+                        "path": norm,
+                        "original_range": [req_start, req_end],
+                        "trimmed_range": [trimmed_start, trimmed_end],
+                        "saved_bytes": saved,
+                    })
+                    prev_ranges = entry.get("ranges", [])
+                    state["files"][norm] = {
+                        "mtime_ns": mtime_ns,
+                        "size": file_size,
+                        "ranges": _merge_ranges([*prev_ranges, [trimmed_start, trimmed_end]]),
+                    }
+                    _save_state(st_path, state)
+                    return {
+                        "allow": True,
+                        "code": "partial-overlap-trimmed",
+                        "reason": f"Trimmed already-read lines to {trimmed_start}-{trimmed_end}.",
+                        "overwrite_range": [trimmed_start, trimmed_end],
+                        "estimated_saved_bytes": saved,
+                    }
+
     # Record allowed read
     if exists:
         prev_ranges = (
