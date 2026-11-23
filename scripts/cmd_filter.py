@@ -134,13 +134,24 @@ def _needs_powershell(cmd: str) -> bool:
     return os.name == "nt" and bool(POWERSHELL_HINT_RE.search(cmd))
 
 
+# Clean single-command tokens safe for cleartext `--run -- <cmd>` (no quotes or shell separators)
+SAFE_CLEARTEXT_CMD_RE = re.compile(r"^[A-Za-z0-9_./:\\ -]+$")
+
+
 def maybe_rewrite_command(
     command_line: str,
     *,
     script_path: str | None = None,
     prefer_rtk: bool = True,
 ) -> str | None:
-    """Return filtered command string if `command_line` is a noisy command, else None."""
+    """
+    Return filtered command string if `command_line` is a noisy command, else None.
+    Uses transparent cleartext `--run -- <cmd>` for simple commands and only
+    falls back to `--run-b64` (with a cleartext `--label`) when quotes or
+    directory-hop prefixes (`cd &&` / `Set-Location ;`) are present.
+    """
+    if os.environ.get("TOKEN_GUARD_NO_REWRITE") == "1":
+        return None
     if not is_noisy_command(command_line):
         return None
 
@@ -151,9 +162,16 @@ def maybe_rewrite_command(
         return f"rtk {tail}"
 
     filter_path = os.path.abspath(script_path or __file__)
-    b64 = base64.urlsafe_b64encode(stripped.encode("utf-8")).decode("ascii")
     shell_flag = " --shell pwsh" if _needs_powershell(stripped) else ""
-    return f'python3 "{filter_path}"{shell_flag} --run-b64 {b64}'
+
+    # Prefer transparent cleartext `--run -- <cmd>` whenever no quotes/separators need escaping
+    if not prefix and not shell_flag and SAFE_CLEARTEXT_CMD_RE.match(stripped):
+        return f'python3 "{filter_path}" --run -- {stripped}'
+
+    b64 = base64.urlsafe_b64encode(stripped.encode("utf-8")).decode("ascii")
+    safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", tail)[:40].strip("_")
+    label_flag = f" --label {safe_label}" if safe_label else ""
+    return f'python3 "{filter_path}"{shell_flag}{label_flag} --run-b64 {b64}'
 
 
 def _resolve_carriage_returns(text: str) -> str:
@@ -314,6 +332,10 @@ def main(argv: list[str] | None = None) -> int:
         if s_idx + 1 < len(args):
             shell_kind = args[s_idx + 1]
             del args[s_idx : s_idx + 2]
+    if "--label" in args:
+        l_idx = args.index("--label")
+        if l_idx + 1 < len(args):
+            del args[l_idx : l_idx + 2]
 
     if len(args) >= 2 and args[0] == "--run-b64":
         try:

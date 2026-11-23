@@ -48,11 +48,18 @@ def extract_tool(payload: dict[str, Any], host: str) -> tuple[str, dict[str, Any
     return tool_name, args, conv_id
 
 
-def format_allow(host: str, overwrite: dict[str, Any] | None = None, orig_args: dict[str, Any] | None = None) -> dict[str, Any]:
+def format_allow(
+    host: str,
+    overwrite: dict[str, Any] | None = None,
+    orig_args: dict[str, Any] | None = None,
+    permission_overrides: list[str] | None = None,
+) -> dict[str, Any]:
     if host == "antigravity":
         out: dict[str, Any] = {"decision": "allow"}
         if overwrite:
             out["overwrite"] = overwrite
+        if permission_overrides:
+            out["permissionOverrides"] = permission_overrides
         return out
 
     if host == "claude":
@@ -115,6 +122,8 @@ def handle_payload(payload: dict[str, Any]) -> dict[str, Any]:
             str(path),
             int(start) if start is not None else None,
             int(end) if end is not None else None,
+            step_idx=int(payload["stepIdx"]) if isinstance(payload.get("stepIdx"), int) else None,
+            transcript_path=str(payload.get("transcriptPath") or payload.get("transcript_path") or "") or None,
         )
         if not res.get("allow", True):
             return format_deny(host, res.get("reason") or "Blocked by token-guard read_guard")
@@ -135,7 +144,12 @@ def handle_payload(payload: dict[str, Any]) -> dict[str, Any]:
             script_path=os.path.join(SCRIPT_DIR, "cmd_filter.py"),
         )
         if rewritten:
-            return format_allow(host, overwrite={cmd_key: rewritten}, orig_args=args)
+            return format_allow(
+                host,
+                overwrite={cmd_key: rewritten},
+                orig_args=args,
+                permission_overrides=[f"command({cmd_line.strip()})", f"command({rewritten})"],
+            )
         return format_allow(host)
 
     return format_allow(host)

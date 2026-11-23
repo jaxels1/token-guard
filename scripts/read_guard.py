@@ -146,6 +146,24 @@ def _save_state(state_path: Path, data: dict[str, Any]) -> None:
         pass
 
 
+def _detect_compaction_marker(transcript_path: str | None) -> str | None:
+    """Inspect the tail of transcript.jsonl for the latest compaction / summary marker."""
+    if not transcript_path:
+        return None
+    try:
+        size = os.path.getsize(transcript_path)
+        with open(transcript_path, "rb") as fh:
+            if size > 65536:
+                fh.seek(size - 65536)
+            tail = fh.read().decode("utf-8", errors="replace")
+        for line in reversed(tail.splitlines()):
+            if '"compacted"' in line or "<CONTEXT_SUMMARY>" in line or '"context_compaction"' in line:
+                return hashlib.sha256(line.encode("utf-8", errors="replace")).hexdigest()[:16]
+    except OSError:
+        pass
+    return None
+
+
 def evaluate_read(
     conversation_id: str,
     file_path: str,
@@ -155,6 +173,10 @@ def evaluate_read(
     state_dir: str | Path | None = None,
     max_unbounded_lines: int = 500,
     max_unbounded_bytes: int = 40960,
+    step_idx: int | None = None,
+    transcript_path: str | None = None,
+    max_step_age: int = 40,
+    max_age_seconds: float = 900.0,
 ) -> dict[str, Any]:
     """
     Validate a file read request.
@@ -278,16 +300,52 @@ def evaluate_read(
     req_start = int(start_line) if start_line is not None else 1
     req_end = int(end_line) if end_line is not None else MAX_RANGE_SPAN
 
+    now_ts = time.time()
     st_path = _state_file(s_dir, conversation_id)
     state = _load_state(st_path)
+
+    # Reset read cache automatically when a new context compaction marker appears in the transcript
+    compaction_marker = _detect_compaction_marker(transcript_path)
+    if compaction_marker and compaction_marker != state.get("compaction_marker"):
+        state["files"] = {}
+        state["compaction_marker"] = compaction_marker
+
+    cur_step = int(step_idx) if step_idx is not None else int(state.get("auto_step", 0)) + 1
+    state["auto_step"] = cur_step
+
     entry = state["files"].get(norm)
 
     if exists and isinstance(entry, dict):
         same_version = entry.get("mtime_ns") == mtime_ns and entry.get("size") == file_size
-        if same_version:
+        age_steps = cur_step - int(entry.get("last_step", cur_step))
+        age_seconds = now_ts - float(entry.get("last_ts", now_ts))
+        expired_by_ttl = (max_step_age > 0 and age_steps > max_step_age) or (
+            max_age_seconds > 0 and age_seconds > max_age_seconds
+        )
+        if expired_by_ttl:
+            entry = None
+            state["files"].pop(norm, None)
+
+        if entry and same_version:
+            # Escape hatch: if the agent immediately retries the exact same range after a block
+            # (e.g. because context compaction dropped the raw lines), allow it on the 2nd attempt.
+            if entry.get("last_blocked_range") == [req_start, req_end]:
+                entry["last_blocked_range"] = None
+                entry["last_step"] = cur_step
+                entry["last_ts"] = now_ts
+                _save_state(st_path, state)
+                return {
+                    "allow": True,
+                    "code": "compaction-retry-allowed",
+                    "reason": "Allowed explicit retry after duplicate block.",
+                    "estimated_saved_bytes": 0,
+                }
+
             for prev_start, prev_end in entry.get("ranges", []):
                 if prev_start <= req_start and req_end <= prev_end:
                     saved = _estimate_range_bytes(file_path, req_start, req_end, file_size)
+                    entry["last_blocked_range"] = [req_start, req_end]
+                    _save_state(st_path, state)
                     append_metric(s_dir, {
                         "event": "read_blocked",
                         "code": "duplicate-read",
@@ -305,7 +363,7 @@ def evaluate_read(
                         "code": "duplicate-read",
                         "reason": (
                             f"token-guard blocked duplicate read of unchanged {os.path.basename(file_path)} ({span_label} already read). "
-                            "Reuse the earlier context or target an unread line range."
+                            "Reuse earlier context, target an unread range, or retry once if prior context was compacted."
                         ),
                         "estimated_saved_bytes": saved,
                     }
@@ -336,6 +394,9 @@ def evaluate_read(
                         "mtime_ns": mtime_ns,
                         "size": file_size,
                         "ranges": _merge_ranges([*prev_ranges, [trimmed_start, trimmed_end]]),
+                        "last_step": cur_step,
+                        "last_ts": now_ts,
+                        "last_blocked_range": None,
                     }
                     _save_state(st_path, state)
                     return {
@@ -360,6 +421,9 @@ def evaluate_read(
             "mtime_ns": mtime_ns,
             "size": file_size,
             "ranges": new_ranges,
+            "last_step": cur_step,
+            "last_ts": now_ts,
+            "last_blocked_range": None,
         }
         _save_state(st_path, state)
 

@@ -36,10 +36,15 @@ class TestReadGuard(unittest.TestCase):
         r1 = read_guard.evaluate_read("conv-1", str(target), 10, 80, state_dir=self.state_dir)
         self.assertTrue(r1["allow"])
 
-        # Exact duplicate blocked
+        # Exact duplicate blocked on 1st duplicate attempt
         r2 = read_guard.evaluate_read("conv-1", str(target), 10, 80, state_dir=self.state_dir)
         self.assertFalse(r2["allow"])
         self.assertEqual(r2["code"], "duplicate-read")
+
+        # Immediate retry of the exact same range (compaction escape hatch) is ALLOWED
+        r2_retry = read_guard.evaluate_read("conv-1", str(target), 10, 80, state_dir=self.state_dir)
+        self.assertTrue(r2_retry["allow"])
+        self.assertEqual(r2_retry["code"], "compaction-retry-allowed")
 
         # Subrange covered by 10-80 blocked
         r3 = read_guard.evaluate_read("conv-1", str(target), 20, 40, state_dir=self.state_dir)
@@ -49,6 +54,10 @@ class TestReadGuard(unittest.TestCase):
         r_partial = read_guard.evaluate_read("conv-1", str(target), 50, 120, state_dir=self.state_dir)
         self.assertTrue(r_partial["allow"])
         self.assertEqual(r_partial.get("overwrite_range"), [81, 120])
+
+        # Step-age TTL expiry (>40 steps later) automatically refreshes the window so 20-40 is allowed again
+        r_ttl = read_guard.evaluate_read("conv-1", str(target), 20, 40, state_dir=self.state_dir, step_idx=100)
+        self.assertTrue(r_ttl["allow"])
 
         # Disjoint range allowed
         r4 = read_guard.evaluate_read("conv-1", str(target), 130, 150, state_dir=self.state_dir)
@@ -96,13 +105,16 @@ class TestReadGuard(unittest.TestCase):
 
 class TestCmdFilter(unittest.TestCase):
     def test_rewrite_and_skip_pipelines(self):
+        # Simple clean commands use transparent cleartext `--run -- <cmd>`
         rewritten = cmd_filter.maybe_rewrite_command("pytest -q tests/", prefer_rtk=False)
         self.assertIsNotNone(rewritten)
-        self.assertIn("--run-b64", rewritten)
+        self.assertIn("--run -- pytest -q tests/", rewritten)
 
-        # Leading cd / Set-Location before a noisy command MUST be detected and rewritten
+        # Leading cd / Set-Location or quoted paths use `--run-b64` with a cleartext `--label`
         cd_cmd = cmd_filter.maybe_rewrite_command('cd /repo && pytest -q', prefer_rtk=False)
         self.assertIsNotNone(cd_cmd)
+        self.assertIn("--run-b64", cd_cmd)
+        self.assertIn("--label pytest_-q", cd_cmd)
         pwsh_cmd = cmd_filter.maybe_rewrite_command('Set-Location "C:\\repo"; python3 -m unittest', prefer_rtk=False)
         self.assertIsNotNone(pwsh_cmd)
         if os.name == "nt":
@@ -166,7 +178,7 @@ class TestHookEntryAdapters(unittest.TestCase):
             self.assertEqual(deny["decision"], "deny")
             self.assertIn("duplicate", deny["reason"].lower())
 
-            # Antigravity run_command rewrite
+            # Antigravity run_command rewrite (uses transparent --run -- and emits permissionOverrides)
             p_cmd = {
                 "hookEventName": "PreToolUse",
                 "conversationId": "agy-conv",
@@ -175,7 +187,8 @@ class TestHookEntryAdapters(unittest.TestCase):
             out_cmd = hook_entry.handle_payload(p_cmd)
             self.assertEqual(out_cmd["decision"], "allow")
             self.assertIn("overwrite", out_cmd)
-            self.assertIn("--run-b64", out_cmd["overwrite"]["CommandLine"])
+            self.assertIn("--run -- pytest tests/", out_cmd["overwrite"]["CommandLine"])
+            self.assertIn("permissionOverrides", out_cmd)
 
             # Claude Code deny on lockfile + Bash rewrite
             cl_read = {
