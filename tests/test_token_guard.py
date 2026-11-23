@@ -93,11 +93,16 @@ class TestReadGuard(unittest.TestCase):
             read_guard.evaluate_read("c", str(nm_file), state_dir=self.state_dir)["allow"]
         )
 
-        big_file = self.root / "big.txt"
-        big_file.write_text("\n".join("row" for _ in range(620)), encoding="utf-8")
+        big_file = self.root / "big.py"
+        big_file.write_text(
+            "\n".join([f"def func_{i}(x, y):\n" + ("    z = x + y\n" * 35) for i in range(18)]),
+            encoding="utf-8",
+        )
         big_res = read_guard.evaluate_read("c", str(big_file), state_dir=self.state_dir)
         self.assertFalse(big_res["allow"])
         self.assertEqual(big_res["code"], "oversized-file-lines")
+        self.assertIn("Structural outline of big.py", big_res["reason"])
+        self.assertIn("def func_0(x, y)", big_res["reason"])
         self.assertTrue(
             read_guard.evaluate_read("c", str(big_file), 1, 100, state_dir=self.state_dir)["allow"]
         )
@@ -105,20 +110,29 @@ class TestReadGuard(unittest.TestCase):
 
 class TestCmdFilter(unittest.TestCase):
     def test_rewrite_and_skip_pipelines(self):
-        # Simple clean commands use transparent cleartext `--run -- <cmd>`
+        # Default mode preserves original command prefix at the start and pipes to `--pipe`
         rewritten = cmd_filter.maybe_rewrite_command("pytest -q tests/", prefer_rtk=False)
         self.assertIsNotNone(rewritten)
-        self.assertIn("--run -- pytest -q tests/", rewritten)
+        self.assertTrue(rewritten.startswith("pytest -q tests/ 2>&1 | python3 "))
+        self.assertIn("--pipe", rewritten)
 
-        # Leading cd / Set-Location or quoted paths use `--run-b64` with a cleartext `--label`
-        cd_cmd = cmd_filter.maybe_rewrite_command('cd /repo && pytest -q', prefer_rtk=False)
+        # Unbounded rg / grep -r rewrites to `--pipe-search`
+        rg_cmd = cmd_filter.maybe_rewrite_command("rg my_symbol", prefer_rtk=False)
+        self.assertIsNotNone(rg_cmd)
+        self.assertTrue(rg_cmd.startswith("rg my_symbol 2>&1 | python3 "))
+        self.assertIn("--pipe-search", rg_cmd)
+
+        # Leading cd stays in cleartext at the front and pipes the tail command
+        cd_cmd = cmd_filter.maybe_rewrite_command("cd /repo && pytest -q", prefer_rtk=False)
         self.assertIsNotNone(cd_cmd)
-        self.assertIn("--run-b64", cd_cmd)
-        self.assertIn("--label pytest_-q", cd_cmd)
+        self.assertTrue(cd_cmd.startswith("cd /repo && pytest -q 2>&1 | python3 "))
+
+        # Complex PowerShell cmdlets fall back to `--run-b64` with `--shell pwsh`
         pwsh_cmd = cmd_filter.maybe_rewrite_command('Set-Location "C:\\repo"; python3 -m unittest', prefer_rtk=False)
         self.assertIsNotNone(pwsh_cmd)
         if os.name == "nt":
             self.assertIn("--shell pwsh", pwsh_cmd)
+            self.assertIn("--run-b64", pwsh_cmd)
 
         # Multi-step pipelines & arbitrary chains must still not be rewritten
         self.assertIsNone(cmd_filter.maybe_rewrite_command("pytest && echo done"))
@@ -178,7 +192,7 @@ class TestHookEntryAdapters(unittest.TestCase):
             self.assertEqual(deny["decision"], "deny")
             self.assertIn("duplicate", deny["reason"].lower())
 
-            # Antigravity run_command rewrite (uses transparent --run -- and emits permissionOverrides)
+            # Antigravity run_command rewrite (preserves prefix with --pipe and emits permissionOverrides)
             p_cmd = {
                 "hookEventName": "PreToolUse",
                 "conversationId": "agy-conv",
@@ -187,8 +201,30 @@ class TestHookEntryAdapters(unittest.TestCase):
             out_cmd = hook_entry.handle_payload(p_cmd)
             self.assertEqual(out_cmd["decision"], "allow")
             self.assertIn("overwrite", out_cmd)
-            self.assertIn("--run -- pytest tests/", out_cmd["overwrite"]["CommandLine"])
+            self.assertTrue(out_cmd["overwrite"]["CommandLine"].startswith("pytest tests/ 2>&1 |"))
             self.assertIn("permissionOverrides", out_cmd)
+
+            # PreCompact event resets read_guard state so the previously blocked read is allowed again
+            compact_evt = {"hookEventName": "PreCompact", "conversationId": "agy-conv"}
+            self.assertEqual(hook_entry.handle_payload(compact_evt)["decision"], "allow")
+            self.assertEqual(hook_entry.handle_payload(p1)["decision"], "allow")
+
+            # Search guard blocks search inside node_modules and injects head_limit on Claude Grep
+            s_block = {
+                "hookEventName": "PreToolUse",
+                "conversationId": "agy-conv",
+                "toolCall": {"name": "grep_search", "args": {"SearchPath": "/repo/node_modules/pkg", "Query": "foo"}},
+            }
+            self.assertEqual(hook_entry.handle_payload(s_block)["decision"], "deny")
+
+            cl_grep = {
+                "hook_event_name": "PreToolUse",
+                "session_id": "cl-1",
+                "tool_name": "Grep",
+                "tool_input": {"pattern": "auth"},
+            }
+            cl_grep_out = hook_entry.handle_payload(cl_grep)
+            self.assertEqual(cl_grep_out["hookSpecificOutput"]["updatedInput"]["head_limit"], 80)
 
             # Claude Code deny on lockfile + Bash rewrite
             cl_read = {

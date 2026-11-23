@@ -2,7 +2,7 @@
   "token-guard": {
     "PreToolUse": [
       {
-        "matcher": "read_file|view_file|run_command",
+        "matcher": "read_file|view_file|run_command|grep_search|find_by_name",
         "hooks": [
           {
             "type": "command",

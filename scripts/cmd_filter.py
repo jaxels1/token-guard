@@ -59,7 +59,10 @@ NOISY_CMD_REGEXES = (
     re.compile(r"^dotnet\s+test\b", re.I),
     re.compile(r"^pip3?\s+install\b", re.I),
     re.compile(r"^git\s+(?:log|diff)\b", re.I),
+    re.compile(r"^(?:rg|grep\s+-[A-Za-z]*r|find\s+\.)\b", re.I),
 )
+
+SEARCH_CMD_RE = re.compile(r"^(?:rg|grep\s+-[A-Za-z]*r|find\s+\.)\b", re.I)
 
 RTK_SUPPORTED_PREFIXES = (
     "pytest",
@@ -134,8 +137,8 @@ def _needs_powershell(cmd: str) -> bool:
     return os.name == "nt" and bool(POWERSHELL_HINT_RE.search(cmd))
 
 
-# Clean single-command tokens safe for cleartext `--run -- <cmd>` (no quotes or shell separators)
-SAFE_CLEARTEXT_CMD_RE = re.compile(r"^[A-Za-z0-9_./:\\ -]+$")
+# Clean command tail tokens safe for human-readable cleartext `--run -- <cmd>` (no quotes or shell metacharacters)
+SAFE_CLEARTEXT_TAIL_RE = re.compile(r"^[A-Za-z0-9_./:\\=-]+(?:\s+[A-Za-z0-9_./:\\=-]+)*$")
 
 
 def maybe_rewrite_command(
@@ -143,12 +146,19 @@ def maybe_rewrite_command(
     *,
     script_path: str | None = None,
     prefer_rtk: bool = True,
+    mode: str = "pipe",
 ) -> str | None:
     """
-    Return filtered command string if `command_line` is a noisy command, else None.
-    Uses transparent cleartext `--run -- <cmd>` for simple commands and only
-    falls back to `--run-b64` (with a cleartext `--label`) when quotes or
-    directory-hop prefixes (`cd &&` / `Set-Location ;`) are present.
+    Return an allowlist-friendly filtered command string if `command_line`
+    is a noisy command, else None.
+    - By default (`mode="pipe"`), preserves the original command at the front:
+        `<original_cmd> 2>&1 | python3 "<cmd_filter.py>" --pipe`
+      so host prefix allowlists (`"allow": ["npm test", "pytest", "git diff"]`)
+      match cleanly without permission popups.
+    - Uses `--pipe-search` for unbounded `rg` / `grep -r` / `find .` commands to
+      exclude vendor/lockfile/minified matches and cap output at 80 lines.
+    - Reserves `--run-b64` strictly as a fallback for complex multi-statement
+      PowerShell commands when `mode="b64"` or PowerShell cmdlets are present.
     """
     if os.environ.get("TOKEN_GUARD_NO_REWRITE") == "1":
         return None
@@ -157,21 +167,22 @@ def maybe_rewrite_command(
 
     stripped = command_line.strip()
     prefix, tail = _strip_leading_cd(stripped)
-    first_tok = tail.split()[0].lower()
-    if not prefix and prefer_rtk and first_tok in RTK_SUPPORTED_PREFIXES and shutil.which("rtk"):
-        return f"rtk {tail}"
-
     filter_path = os.path.abspath(script_path or __file__)
-    shell_flag = " --shell pwsh" if _needs_powershell(stripped) else ""
 
-    # Prefer transparent cleartext `--run -- <cmd>` whenever no quotes/separators need escaping
-    if not prefix and not shell_flag and SAFE_CLEARTEXT_CMD_RE.match(stripped):
-        return f'python3 "{filter_path}" --run -- {stripped}'
+    first_tok = tail.split()[0].lower()
+    if prefer_rtk and not SEARCH_CMD_RE.match(tail) and first_tok in RTK_SUPPORTED_PREFIXES and shutil.which("rtk"):
+        return f"{prefix}rtk {tail}"
 
-    b64 = base64.urlsafe_b64encode(stripped.encode("utf-8")).decode("ascii")
-    safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", tail)[:40].strip("_")
-    label_flag = f" --label {safe_label}" if safe_label else ""
-    return f'python3 "{filter_path}"{shell_flag}{label_flag} --run-b64 {b64}'
+    if _needs_powershell(stripped) or mode == "b64":
+        b64 = base64.urlsafe_b64encode(stripped.encode("utf-8")).decode("ascii")
+        shell_flag = " --shell pwsh" if _needs_powershell(stripped) else ""
+        return f'python3 "{filter_path}"{shell_flag} --run-b64 {b64}'
+
+    pipe_flag = "--pipe-search" if SEARCH_CMD_RE.match(tail) else "--pipe"
+    if mode == "run" and SAFE_CLEARTEXT_TAIL_RE.match(tail):
+        return f'{prefix}python3 "{filter_path}" --run -- {tail}'
+
+    return f'{prefix}{tail} 2>&1 | python3 "{filter_path}" {pipe_flag}'
 
 
 def _resolve_carriage_returns(text: str) -> str:
@@ -354,10 +365,32 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return run_filtered_command(" ".join(rest), shell_kind=shell_kind)
 
+    if "--pipe-search" in args:
+        from search_guard import filter_search_stdout
+        raw = sys.stdin.read()
+        compressed, meta = filter_search_stdout(raw)
+        if compressed:
+            print(compressed)
+        _append_metric({
+            "event": "search_filtered",
+            "raw_bytes": meta["raw_bytes"],
+            "filtered_bytes": meta["filtered_bytes"],
+            "saved_bytes": meta["saved_bytes"],
+        })
+        return 0
+
     raw = sys.stdin.read()
-    compressed, _ = filter_output(raw)
+    compressed, meta = filter_output(raw)
     if compressed:
         print(compressed)
+    if "--pipe" in args:
+        _append_metric({
+            "event": "cmd_filtered",
+            "command": "piped",
+            "raw_bytes": meta["raw_bytes"],
+            "filtered_bytes": meta["filtered_bytes"],
+            "saved_bytes": meta["saved_bytes"],
+        })
     return 0
 
 

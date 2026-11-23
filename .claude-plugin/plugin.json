@@ -1,7 +1,7 @@
 {
   "name": "token-guard",
-  "version": "1.0.0",
-  "description": "Cross-agent token & AI-usage optimizer: duplicate/unbounded read guard, noisy command filter with raw log spill, cache-safe skill, and transcript auditor.",
+  "version": "1.1.0",
+  "description": "Cross-agent token & AI-usage optimizer: compaction-aware read guard with AST outlines, search explosion cap, allowlist-friendly command filter, sub-2ms daemon, and A/B benchmark suite.",
   "author": {
     "name": "jaxels1",
     "url": "https://github.com/jaxels1"
@@ -12,12 +12,23 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Read|Bash",
+        "matcher": "Read|Bash|Grep|Glob",
         "hooks": [
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_entry.py\"",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_entry.py\"",
+            "timeout": 5
           }
         ]
       }

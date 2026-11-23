@@ -122,20 +122,33 @@ def _state_file(state_dir: Path, conversation_id: str) -> Path:
     return state_dir / f"reads-{digest}.json"
 
 
+_MEM_STATE_CACHE: dict[str, dict[str, Any]] = {}
+
+
 def _load_state(state_path: Path) -> dict[str, Any]:
+    key = str(state_path)
+    cached = _MEM_STATE_CACHE.get(key)
+    if cached is not None:
+        return cached
     if not state_path.exists():
-        return {"files": {}}
+        fresh: dict[str, Any] = {"files": {}}
+        _MEM_STATE_CACHE[key] = fresh
+        return fresh
     try:
         with open(state_path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
         if isinstance(data, dict) and isinstance(data.get("files"), dict):
+            _MEM_STATE_CACHE[key] = data
             return data
     except (OSError, json.JSONDecodeError):
         pass
-    return {"files": {}}
+    fresh = {"files": {}}
+    _MEM_STATE_CACHE[key] = fresh
+    return fresh
 
 
 def _save_state(state_path: Path, data: dict[str, Any]) -> None:
+    _MEM_STATE_CACHE[str(state_path)] = data
     try:
         state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = state_path.with_suffix(".tmp")
@@ -144,6 +157,26 @@ def _save_state(state_path: Path, data: dict[str, Any]) -> None:
         os.replace(tmp_path, state_path)
     except OSError:
         pass
+
+
+def reset_conversation_state(
+    conversation_id: str,
+    *,
+    state_dir: str | Path | None = None,
+) -> None:
+    """Reset tracked read ranges for `conversation_id` on PreCompact / context summarization."""
+    s_dir = Path(state_dir) if state_dir else default_state_dir()
+    st_path = _state_file(s_dir, conversation_id)
+    _MEM_STATE_CACHE.pop(str(st_path), None)
+    if st_path.exists():
+        try:
+            st_path.unlink()
+        except OSError:
+            _save_state(st_path, {"files": {}})
+    append_metric(s_dir, {
+        "event": "compaction_reset",
+        "conversation_id": conversation_id,
+    })
 
 
 def _detect_compaction_marker(transcript_path: str | None) -> str | None:
@@ -261,6 +294,9 @@ def evaluate_read(
 
         if exists:
             if file_size > max_unbounded_bytes:
+                from outline_gen import generate_file_outline
+                outline = generate_file_outline(file_path)
+                outline_block = f"\n\n{outline}" if outline else ""
                 append_metric(s_dir, {
                     "event": "read_blocked",
                     "code": "oversized-file-bytes",
@@ -272,13 +308,17 @@ def evaluate_read(
                     "code": "oversized-file-bytes",
                     "reason": (
                         f"token-guard blocked unbounded read of {os.path.basename(file_path)} ({file_size} bytes > {max_unbounded_bytes}). "
-                        "Use `rg` / `code-index` to locate symbols and read with StartLine/EndLine."
+                        f"Request the target symbol's line range with StartLine/EndLine:{outline_block}"
                     ),
+                    "outline": outline,
                     "estimated_saved_bytes": file_size,
                 }
 
             line_count, exceeded = _count_lines_capped(file_path, max_unbounded_lines)
             if exceeded:
+                from outline_gen import generate_file_outline
+                outline = generate_file_outline(file_path)
+                outline_block = f"\n\n{outline}" if outline else ""
                 saved = max(file_size, max_unbounded_lines * 40)
                 append_metric(s_dir, {
                     "event": "read_blocked",
@@ -291,8 +331,9 @@ def evaluate_read(
                     "code": "oversized-file-lines",
                     "reason": (
                         f"token-guard blocked unbounded read of {os.path.basename(file_path)} (>{max_unbounded_lines} lines). "
-                        "Locate target symbols first and read a bounded <150-line slice."
+                        f"Request the target symbol's line range with StartLine/EndLine:{outline_block}"
                     ),
+                    "outline": outline,
                     "estimated_saved_bytes": saved,
                 }
 

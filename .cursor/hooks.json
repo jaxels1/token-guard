@@ -3,9 +3,15 @@
   "hooks": {
     "preToolUse": [
       {
-        "matcher": "Read|Shell",
+        "matcher": "Read|Shell|Grep|Glob",
         "command": "python3 scripts/hook_entry.py",
         "timeout": 10
+      }
+    ],
+    "preCompact": [
+      {
+        "command": "python3 scripts/hook_entry.py",
+        "timeout": 5
       }
     ]
   }

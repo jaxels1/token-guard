@@ -119,40 +119,40 @@
       <h2>5 Defense Layers</h2>
       <div class="grid">
         <div class="card">
-          <h3>read_guard.py</h3>
-          <p>Blocks unchanged duplicate reads, auto-trims overlapping ranges, and gates lockfiles, minified bundles, and <code>&gt;500</code>-line unbounded reads.</p>
+          <h3>Compaction-Aware read_guard</h3>
+          <p>Resets on <code>PreCompact</code>, auto-trims overlapping ranges, provides a 2nd-try escape hatch, and returns automatic AST/regex symbol outlines on <code>&gt;500</code>-line files.</p>
         </div>
         <div class="card">
-          <h3>cmd_filter.py</h3>
-          <p>Compresses verbose test, build, lint, and git output (including <code>cd</code> / PowerShell <code>Set-Location</code> prefixes) with raw temp-log spills.</p>
+          <h3>Allowlist-Friendly cmd_filter</h3>
+          <p>Preserves command prefixes (<code>&lt;cmd&gt; 2&gt;&amp;1 | python3 cmd_filter.py --pipe</code>), delegates to <code>rtk</code> when installed, and spills raw logs to <code>%TEMP%</code>.</p>
         </div>
         <div class="card">
-          <h3>Cache-Safe SKILL.md</h3>
-          <p>309 tokens with parallel tool batching, symbol-first navigation, and zero per-turn <code>PreInvocation</code> cache invalidation.</p>
+          <h3>search_guard &amp; Sub-2ms Daemon</h3>
+          <p>Caps monorepo <code>rg</code> / <code>Grep</code> explosions at 80 matches (excluding <code>node_modules</code> &amp; lockfiles) and serves hooks from a persistent worker (<code>p50 = 1.95 ms</code>).</p>
         </div>
         <div class="card">
-          <h3>audit_transcript.py</h3>
-          <p>Parses Antigravity, Claude Code &amp; ChatGPT / Codex JSONL transcripts to quantify duplicate reads blocked and net tokens saved.</p>
+          <h3>Live A/B + Replay Auditors</h3>
+          <p>Ships both a 24-task live A/B harness (<code>ab_benchmark.py</code>, modeling rebound calls) and a JSONL transcript auditor (<code>audit_transcript.py</code>).</p>
         </div>
       </div>
 
-      <h2>Verified Benchmark Proof (63 Real Sessions &middot; 15,024 Tool Calls)</h2>
+      <h2>Live 24-Task A/B Benchmark + 63-Session Replay Audit</h2>
       <div class="grid">
         <div class="card">
-          <h3>-55.5% Uncached Burn</h3>
-          <p>Eliminated <strong>14.75M tokens</strong> (<code>59.0 MB</code>) out of <code>26.56M</code> fresh uncached input tokens across 63 ChatGPT / Codex Desktop sessions (<strong>~2.25&times; quota runway</strong>).</p>
+          <h3>24/24 Pass &middot; -95.0% in Live A/B</h3>
+          <p>Across 24 deterministic tasks in <code>ab_benchmark.py</code> (including 6 rebound slice reads after AST outlines): <strong>100% task pass rate</strong> and <strong>443,112 &rarr; 22,292 fresh tokens</strong>.</p>
         </div>
         <div class="card">
-          <h3>-80.7% Output Bloat</h3>
-          <p>Compressed oversized and noisy command/tool output across 15,024 calls from <strong>47.61 MB down to 9.17 MB</strong> while preserving errors and exit codes.</p>
+          <h3>p50 = 1.95 ms Hook Latency</h3>
+          <p>Persistent background worker (<code>hook_daemon.py</code>) keeps state hot in memory over a <code>TCP_NODELAY</code> socket, cutting per-call hook latency to <strong>1.95 ms median</strong>.</p>
         </div>
         <div class="card">
-          <h3>2,951 Duplicate Reads</h3>
-          <p>Caught <strong>2,951 unchanged duplicate file reads</strong> across 63 ChatGPT / Codex sessions plus 7 duplicate reads (`~15,825` tokens) in a 610-turn Antigravity session.</p>
+          <h3>-55.5% Replay Recoverable Burn</h3>
+          <p>Offline replay across 63 ChatGPT / Codex sessions (15,024 calls) identified <strong>14.75M recoverable tokens</strong> (<code>59.0 MB</code>) out of <code>26.56M</code> fresh uncached input tokens.</p>
         </div>
         <div class="card">
-          <h3>97.8% KV Cache Hit</h3>
-          <p>Zero <code>PreInvocation</code> prompt mutations kept <strong>1.190B of 1.217B input tokens</strong> served straight from the KV prefix cache.</p>
+          <h3>2,951 Dup Reads &amp; -80.7% Output</h3>
+          <p>Flagged <strong>2,951 duplicate file reads</strong> and compressed oversized tool outputs from <strong>47.61 MB to 9.17 MB</strong> while preserving a <strong>97.8% KV cache hit rate</strong>.</p>
         </div>
       </div>
 

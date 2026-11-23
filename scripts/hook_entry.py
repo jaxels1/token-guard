@@ -16,9 +16,6 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from cmd_filter import maybe_rewrite_command  # noqa: E402
-from read_guard import evaluate_read  # noqa: E402
-
 
 def detect_host(payload: dict[str, Any]) -> str:
     if "toolCall" in payload or "hookEventName" in payload:
@@ -104,10 +101,19 @@ def format_deny(host: str, reason: str) -> dict[str, Any]:
 
 def handle_payload(payload: dict[str, Any]) -> dict[str, Any]:
     host = detect_host(payload)
+    hook_evt = str(payload.get("hookEventName") or payload.get("hook_event_name") or "")
     tool_name, args, conv_id = extract_tool(payload, host)
     norm_tool = tool_name.strip()
 
+    # 0. PreCompact / context compaction reset event
+    if hook_evt in ("PreCompact", "preCompact", "Compact"):
+        from read_guard import reset_conversation_state
+        reset_conversation_state(conv_id)
+        return format_allow(host)
+
+    # 1. File Read Guard (+ automatic AST/regex outline on >500-line files)
     if norm_tool in ("read_file", "view_file", "Read"):
+        from read_guard import evaluate_read
         path = args.get("Path") or args.get("AbsolutePath") or args.get("file_path") or args.get("path") or ""
         start = args.get("StartLine") if args.get("StartLine") is not None else args.get("offset")
         end = args.get("EndLine") if args.get("EndLine") is not None else None
@@ -136,7 +142,19 @@ def handle_payload(payload: dict[str, Any]) -> dict[str, Any]:
             return format_allow(host, overwrite=ov, orig_args=args)
         return format_allow(host)
 
+    # 2. Grep / Search Explosion Guard
+    if norm_tool in ("grep_search", "find_by_name", "Grep", "Glob"):
+        from search_guard import evaluate_search
+        s_res = evaluate_search(norm_tool, args)
+        if not s_res.get("allow", True):
+            return format_deny(host, s_res.get("reason") or "Blocked by token-guard search_guard")
+        if s_res.get("overwrite"):
+            return format_allow(host, overwrite=s_res["overwrite"], orig_args=args)
+        return format_allow(host)
+
+    # 3. Noisy Command Output Filter (allowlist-friendly `--pipe` prefix preservation)
     if norm_tool in ("run_command", "Bash", "Shell", "run_shell_command"):
+        from cmd_filter import maybe_rewrite_command
         cmd_key = "CommandLine" if "CommandLine" in args else ("command" if "command" in args else "Command")
         cmd_line = str(args.get(cmd_key) or "")
         rewritten = maybe_rewrite_command(
@@ -165,6 +183,19 @@ def main() -> int:
         if not isinstance(payload, dict):
             print("{}")
             return 0
+
+        # Fast path: query persistent background worker (<1.5ms round-trip) if active
+        if os.environ.get("TOKEN_GUARD_USE_DAEMON", "1") != "0":
+            try:
+                from hook_daemon import ensure_daemon_started, query_daemon
+                resp = query_daemon(payload)
+                if resp is not None:
+                    print(json.dumps(resp))
+                    return 0
+                ensure_daemon_started()
+            except Exception:
+                pass
+
         response = handle_payload(payload)
         print(json.dumps(response))
         return 0
