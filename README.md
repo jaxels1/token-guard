@@ -1,161 +1,122 @@
 <p align="left">
-  <img src="./assets/logo.svg" alt="token-guard logo" width="64" height="64" />
+  <img src="./assets/logo.svg" alt="token-guard" width="56" height="56" />
 </p>
 
-# Token Guard — Cross-Agent Token & AI-Usage Optimizer
+# token-guard
 
-**Token Guard (`token-guard`)** is a zero-dependency cross-agent plugin and `SKILL.md` bundle built for **Antigravity, Claude Code, Cursor, OpenAI Codex (ChatGPT Desktop), and Gemini CLI**. It combines compaction-aware read deduplication, automatic AST/regex structural outlines on large files, monorepo search explosion capping, allowlist-friendly command stdout filtering, a `<2ms` persistent background hook daemon, and reproducible live A/B + transcript replay benchmarks.
+PreToolUse hooks and [`SKILL.md`](./skills/token-guard/SKILL.md) for coding agents like Claude Code, Cursor, or Codex that stop agents from re-reading unchanged files, dumping big files for no reason, or filling context with passing unit test logs. Token Guard relies on no third-party dependencies and is Python 3 stdlib only. It doesn't touch `PreInvocation` prompts to keep the KV prefix cache intact.
 
-![token-guard skill demo](./assets/demo.gif)
+![token-guard demo](./assets/demo.gif)
 
-## Quick Install
-
-### Cross-Agent Skill (`skills.sh`)
+## Installation
 
 ```bash
 npx skills add jaxels1/token-guard
 ```
 
-### Antigravity Global Plugin
+Antigravity:
 
 ```bash
 git clone https://github.com/jaxels1/token-guard.git ~/.gemini/config/plugins/token-guard
 ```
 
-### Claude Code / Cursor / ChatGPT (Codex)
+- For Claude Code: you register the plugin via `.claude-plugin/plugin.json` (sets up `PreToolUse` for `Read` / `Bash` / `Grep` / `Glob` and `PreCompact` resetting).
+- For Cursor: you add `.cursor/hooks.json`, `skills/token-guard/`, and `scripts/` to your workspace or user config.
+- For Codex or ChatGPT Desktop App: add `skills/token-guard/` and `scripts/` to `~/.codex/skills/token-guard` and merge `hooks.json` into `~/.codex/hooks.json`.
 
-- **Claude Code**: Point `--plugin-dir` (or plugin install) to `.claude-plugin/plugin.json` (includes `PreToolUse` on `Read|Bash|Grep|Glob` and `PreCompact` reset hooks).
-- **Cursor**: Copy `.cursor/hooks.json`, `skills/token-guard/`, and `scripts/` into your workspace or config root.
-- **ChatGPT / OpenAI Codex Desktop**: Clone or copy `skills/token-guard/` and `scripts/` into `~/.codex/skills/token-guard`.
+## Audit your session logs
 
-### Scan Your Own Machine (`--scan-all`)
-
-See exactly how many duplicate file reads and megabytes of noisy test/CLI output are sitting in your local Claude Code (`~/.claude/projects`), ChatGPT / Codex (`~/.codex/sessions`), and Antigravity (`~/.gemini/antigravity/brain`) session logs right now:
+You can run a quick check to see the context you wasted on useless stuff like double reading or noisy CLI output in your existing agent chatlogs:
 
 ```bash
 python3 scripts/audit_transcript.py --scan-all
 ```
 
-```text
-┌────────────────────────────────────────────────────────────────────────┐
-│ TOKEN-GUARD · LOCAL AGENT SESSION SCORECARD                     v1.1.0 │
-├────────────────────────────────────────────────────────────────────────┤
-│ Sessions scanned: 75                 Turns: 1,523 · Tool calls: 16,167 │
-│   • ChatGPT / Codex           53 sessions · 15,024 calls · ~14.75M tok │
-│   • Antigravity                  22 sessions · 1,143 calls · ~33,825 tok │
-├────────────────────────────────────────────────────────────────────────┤
-│ Duplicate unchanged file reads:                          2,964 blocked │
-│ Unbounded lockfile / bundle reads:                           0 blocked │
-│ Noisy CLI / test outputs compressed:      45.42 MB -> 8.76 MB (-80.7%) │
-│ Recorded KV prefix cache hit rate:       97.8% (1.19B / 1.22B tok)     │
-├────────────────────────────────────────────────────────────────────────┤
-│ RECOVERABLE CONTEXT BLOAT:     56.39 MB (~14.78M tok) (-55.7% fresh burn) │
-│ Install token-guard:                npx skills add jaxels1/token-guard │
-└────────────────────────────────────────────────────────────────────────┘
-```
+Here's an example output across 75 local sessions:
+- Codex: 15,024 calls, 53 sessions which is ~14.75M tokens
+- Antigravity: 1,143 calls, 22 sessions which is ~33,825 tokens
+- 2,964 double reads of identical files stopped before tokens are wasted
+- 0 successful lockfile/bundle reads without bounds
+- 45.42 MB reduced to 8.76 MB from noisy CLI/test outputs
+- KV prefix cache hit rate: pretty good 97.8% (1.19B / 1.22B tokens)
+- Recoverable context waste: 56.39 MB, which is roughly 14.78M tokens, -55.7% of new uncached token burn.
 
----
+## Benchmark
 
-## Verified Benchmarks: Live `GPT-6.1 Terra` CLI A/B + 24-Task Harness + 63-Session Replay
+Shown here are 3 different benchmarks to separate live model performance (incl. rebound tool calls) from replayed logs.
 
-We publish **three distinct tiers of benchmark evidence**—so you can see real end-to-end LLM behavior on **`gpt-6.1-terra` (`GPT-6.1 Terra` in the ChatGPT / Codex Desktop app)**, deterministic 24-task A/B harness numbers (including rebound calls), and 63-session historical replay bounds.
+### `gpt-6.1-terra` benchmark (A/B, `python3 scripts/live_codex_ab.py`)
 
-### 1. Live End-to-End `GPT-6.1 Terra` (`gpt-6.1-terra`) ChatGPT App A/B Benchmark (`scripts/live_codex_ab.py`)
+Selected tasks run using `gpt-6.1-terra` in Codex with token-guard enabled versus the same task with token-guard disabled (`codex.exe exec -m gpt-6.1-terra -c model_reasoning_effort="low" --ephemeral --json`).
 
-Executed live via the ChatGPT / Codex Desktop app CLI (`codex.exe exec -m gpt-6.1-terra -c model_reasoning_effort="low" --ephemeral --json`) with `token-guard` **OFF** vs. **ON** (`~/.codex/hooks.json` + `~/.codex/skills/token-guard` enabled) across two representative coding tasks:
-- **`T1_large_file_bug_lookup`**: Locate an off-by-one fee multiplier bug inside a 560-line Python module (`billing_engine.py`, `compute_fee_tier_14`).
-- **`T2_noisy_test_diagnosis`**: Run a 140-test verbose `unittest` suite (`test_billing.py`) and diagnose the single failing test case and expected vs. actual values.
+- Task 1: Identify a hidden off-by-one error in a fee multiplier within a 560-line Python script called `billing_engine.py`.
+- Task 2: Run 140 testing cases with `test_billing.py` and find the failing assertion.
 
-| Task / Metric (`gpt-6.1-terra` Live Run) | `token-guard` OFF | `token-guard` ON | Live Delta |
+| (`gpt-6.1-terra`) Metric | No Token Guard | With Token Guard | Delta |
 | :--- | :--- | :--- | :--- |
-| **`T1` Large-File Lookup — Task Pass** | `PASS` (`0.04` vs `0.05`) | **`PASS` (`0.04` vs `0.05`)** | **`100%` accuracy** |
-| **`T1` Large-File Lookup — Tool Output Bytes** | `3,311` bytes | **`2,547` bytes** | **`-23.1%` tool output bytes** |
-| **`T2` Noisy 140-Test Diagnosis — Task Pass** | `PASS` (`50.0` vs `40.0`) | **`PASS` (`50.0` vs `40.0`)** | **`100%` accuracy** |
-| **`T2` Noisy 140-Test Diagnosis — Tool Output Bytes** | `28,294` bytes (`28.3 KB`) | **`4,321` bytes (`4.3 KB`)** | **`-84.7%` stdout bytes fed to model** |
-| **`T2` Noisy 140-Test Diagnosis — Total Input Tokens** | `68,204` tokens | **`43,359` tokens** | **`-36.4%` total input tokens (`-24,845` tok)** |
-| **`T2` Noisy 140-Test Diagnosis — Fresh Uncached Tokens** | `12,012` tokens | **`9,823` tokens** | **`-18.2%` fresh uncached tokens** |
-| **`T2` Noisy 140-Test Diagnosis — Output Tokens** | `136` tokens | **`93` tokens** | **`-31.6%` output tokens** |
-| **`T2` Noisy 140-Test Diagnosis — Tool Calls & Wall Time** | `2` calls · `9.64s` | **`1` call · `8.96s`** | **`-50%` tool calls · `-7.1%` faster** |
-| **Combined (`T1 + T2`) — Total Tool Output Bytes** | `31,605` bytes | **`6,868` bytes** | **`-78.3%` total tool output bytes** |
-| **Combined (`T1 + T2`) — Total Input Tokens** | `150,091` tokens | **`129,815` tokens** | **`-13.5%` total input tokens (`-20,276` tok)** |
-| **Combined (`T1 + T2`) — Tool Calls & Output Tokens** | `5` calls · `351` out tok | **`4` calls · `311` out tok** | **`-20.0%` calls · `-11.4%` output tokens** |
+| T1 File lookup passed | PASS (0.04 vs 0.05) | PASS (0.04 vs 0.05) | 100% accuracy |
+| T1 Tool output size | 3,311 Bytes | 2,547 Bytes | 23.1% reduction |
+| T2 Test suite passed | PASS (50.0 vs 40.0) | PASS (50.0 vs 40.0) | 100% accuracy |
+| T2 Tool output size | 28,294 Bytes (28.3 KB) | 4,321 Bytes (4.3 KB) | 84.7% reduction |
+| T2 Total input tokens | 68,204 | 43,359 | 36.4% reduction (24,845 tokens) |
+| T2 New uncached tokens | 12,012 | 9,823 | 18.2% reduction |
+| T2 Output tokens | 136 | 93 | 31.6% reduction |
+| T2 Tool calls and runtime | 2 calls (9.64s) | 1 call (8.96s) | 50% fewer calls, 7.1% faster |
+| (T1 & T2) Total tool output size | 31,605 Bytes | 6,868 Bytes | 78.3% reduction |
+| Combined (T1 + T2) total input tokens | 150,091 | 129,815 | -13.5% (-20,276 tok) |
 
-> **Transparency note on `T1` prompt cache**: Toggling `features.skip_host_skill_discovery` from `true` (`OFF`) to `false` (`ON`) loads the host `~/.codex/skills` catalog (~7.2k tokens of installed skill descriptions) into the initial turn-1 prefix (`T1` uncached tokens `2,783` warm cache → `10,040` on skill-catalog mount). Once the prefix is warm (`T2`), `token-guard` cuts both total input tokens (`-36.4%`) and fresh uncached tokens (`-18.2%`) while completing `7.1%` faster.
+Note on T1 cache: With host skills enabled (`features.skip_host_skill_discovery=false`), the user's `~/.codex/skills` directory is automatically mounted (~7.2k tokens). In turn 1, uncached tokens increased from 2,783 (with previous prefix) to 10,040 (as new skills mounted). Once the prefix warmed up (T2), total input tokens and also new uncached tokens dropped by 36.4% and 18.2%.
 
-Reproduce locally with your ChatGPT / Codex app CLI:
+### Deterministic Task Benchmark (24 tasks, `python3 scripts/ab_benchmark.py`)
 
-```bash
-python3 scripts/live_codex_ab.py
-```
+24 tasks are run (`large_file_bugfix`, `multi_read_refactor`, `monorepo_search_audit`, `compaction_recovery`) in a fixture project. This benchmark counts the rebound tool calls made before and after outline blocks.
 
-### 2. Deterministic 24-Task A/B Benchmark Harness (`python3 scripts/ab_benchmark.py`)
-
-Runs 24 deterministic coding tasks across four categories (`large_file_bugfix`, `multi_read_refactor`, `monorepo_search_audit`, and `compaction_recovery`) against a multi-file fixture repo—explicitly counting **behavioral rebound tool calls** (e.g. when `read_guard.py` blocks an unbounded `>500`-line read and returns an AST structural outline, the agent issues a follow-up bounded `StartLine`/`EndLine` read for the target function):
-
-| Metric | Baseline Agent | `token-guard` Enabled | Net Delta |
+| Metric | Baseline | w/ Token Guard | Delta |
 | :--- | :--- | :--- | :--- |
-| **1. Task Pass Rate** | `24 / 24` (`100.0%`) | **`24 / 24` (`100.0%`)** | **`0.0%` accuracy loss** |
-| **2. Fresh Uncached Tokens (incl. rebound calls)** | `443,112` tokens | **`22,292` tokens** | **`-95.0%` (`420,820` tokens saved)** |
-| **3. Persistent Daemon Hook Latency (`hook_daemon.py`)** | N/A | **`p50 = 1.95 ms` (`avg = 3.33 ms`)** | Sub-2ms median overhead on Windows |
-| **4. Tool Calls per Task (incl. 6 rebound slice reads)** | `3.25` (`78` total) | **`3.25` (`78` total)** | AST outlines eliminate extra search turns |
+| Task complete | 24 / 24 (100%) | 24 / 24 (100%) | 0% accuracy loss |
+| New uncached tokens including rebound reads | 443,112 | 22,292 | 95.0% reduction (420,820 tokens) |
+| Persistent hook (`hook_daemon.py`) latency | n/a | p50 1.95ms (Average 3.33ms) | loopback socket, Win |
+| Tool calls per task (with 6 rebound read slices) | 3.25 (78 total) | 3.25 (78 total) | Tool outline means no grep loops |
 
-Reproduce locally:
+### Log Benchmark (`python3 scripts/audit_transcript.py`)
 
-```bash
-python3 scripts/ab_benchmark.py
-python3 scripts/ab_benchmark.py --json
-```
+An audit of 63 Codex logs that include actual code development (15,024 tool calls, 561 turns) and one Antigravity session with 610 turns and 694 tool calls.
 
-### 3. Offline Transcript Replay Analysis (63 Real ChatGPT / Codex Sessions + 610-Turn Antigravity Session)
-
-Running `scripts/audit_transcript.py` retroactively over **63 real ChatGPT / OpenAI Codex Desktop transcripts** (`~/.codex/sessions/**/rollout-*.jsonl`, `15,024` tool calls across `561` turns) plus a **610-turn Antigravity session** (`694` tool calls) measures the upper-bound duplicate-read and command-output waste present in unguarded sessions:
-
-| Metric (Offline Replay Upper Bound) | 63 ChatGPT / Codex Sessions | 610-Turn Antigravity Session |
+| Metric | 63 Codex Logs | 610-turn Antigravity log |
 | :--- | :--- | :--- |
-| **Turns / Tool Calls Audited** | `561` turns · `15,024` calls | `610` turns · `694` calls |
-| **Oversized & Noisy Command / Tool Output** | `47.61 MB` raw → `9.17 MB` filtered (**`-80.7%`**) | `11` noisy commands wrapped |
-| **Duplicate Unchanged File Reads Flagged** | **`2,951` redundant reads** (`~20.56 MB`) | **`7` redundant reads** |
-| **Total Recoverable Payload** | **`59.00 MB` (`~14,748,795` tokens)** | **`63,300` bytes (`~15,825` tokens)** |
-| **Recorded KV Prefix Cache Hit Rate** | **`97.8%`** (`1.190B / 1.217B` input tokens) | **`100%` prefix-safe** (`0` `PreInvocation` hooks) |
-| **Recoverable Share of Fresh Uncached Input Tokens** | **`55.5%`** (`14.75M` of `26.56M` uncached tokens) | **`~2.25×` theoretical quota runway** |
+| Turns / tool calls | 561 turns / 15,024 | 610 turns / 694 calls |
+| Reduction of noisy tool command output | 47.61MB reduced to 9.17MB (80.7%) | 11 noisy commands wrapped |
+| Double reads of identical files | 2,951 (20.56MB) | 7 reads |
+| Total recoverable payload | 59.00MB (14.75M tokens) | 63.3KB (15,825 tokens) |
+| KV prefix cache hit rate | 97.8% (1.190B of 1.217B) | 100% prefix safe |
+| Recoverable proportion of new uncached tokens | 55.5% (14.75M / 26.56M) | ~2.25x more quota |
 
-> **Note on Replay vs. Live Sessions**: Offline replay measures exact bytes sent in historical logs without re-running the model. In live sessions, follow-up slice reads after an outline block consume a small rebound budget (~35–80 lines per slice), which is why `scripts/ab_benchmark.py` is provided alongside `scripts/audit_transcript.py`.
+## Operation
 
----
+### Reads deduplication & AST File outlines (`scripts/read_guard.py` & `outline_gen.py`)
+- Track ranges read from files using `(ConversationID, Path, start line, end line, mtime in nanoseconds, size)`.
+- Read ranges reset on `PreCompact` hook and in the presence of `compacted` / `<CONTEXT_SUMMARY>` in the transcript (to prevent the model from getting blocked after context summary).
+- Entries expire after 40 tool calls or 15 minutes. If a blocked read is retried, the entry may be retried immediately (`compaction-retry-allowed`).
+- Overlap reduction (via `PreToolUse` overwrite). For example, reading 40-120 after reading 1-80 will reduce the range to 81-120.
+- If reading a large file (> 500 lines) and an unbounded read is requested, return an outline of what symbols exist in the file (`class`, `def`, `L<start>-<end>`) using Python AST or a fallback to regex patterns.
 
-## Architecture & Key Capabilities
+### Search limitation (`scripts/search_guard.py`)
+- `Grep`, `Glob`, `grep_search`, `find_by_name`, or shell `rg` / `grep -r` / `find .` commands intercepted.
+- Direct searches are not allowed in `node_modules`, `dist`, `.next`, lockfiles, or minified assets. Sets the `head_limit` to 80 and also limits piped results to 80 matches.
 
-1. **Compaction-Aware Read Guard + Automatic AST Outlines (`scripts/read_guard.py`, `scripts/outline_gen.py`)**:
-   - **Context Compaction Reset**: Listens for `PreCompact` lifecycle events and scans transcript tails (`64 KB`) for `"compacted"` / `<CONTEXT_SUMMARY>` markers, resetting cached read ranges automatically so the agent never suffers post-compaction amnesia.
-   - **Step & Wall-Clock TTL + Retry Escape Hatch**: Expires cached ranges after `40` tool steps or `15` minutes, and allows an immediate second attempt (`compaction-retry-allowed`) if the model explicitly retries a blocked range.
-   - **Automatic Partial-Overlap Trimming**: If lines `1–80` were read and the agent requests `40–120`, `PreToolUse` `overwrite` trims the read to `81–120`.
-   - **Automatic AST / Regex Structural Outlines on Large Files (`>500` lines)**: Instead of a dead-end error on oversized files, returns a compact symbol outline (classes, functions, methods, and exact `L<start>-<end>` line numbers via Python `ast` or regex heuristics) so the agent jumps straight to the target 30-line slice in one follow-up call.
-2. **Grep / Search Explosion Guard (`scripts/search_guard.py`)**:
-   - Intercepts `grep_search`, `find_by_name`, `Grep`, `Glob`, and shell `rg` / `grep -r` / `find .` calls.
-   - Blocks direct searches inside `node_modules`, `dist`, `.next`, lockfiles, and minified bundles; auto-injects exclusion lists / `head_limit: 80`; and caps piped search stdout at `80` matches with a summary footer (`[token-guard search cap: ...and N more matches across M files]`).
-3. **Allowlist-Friendly Command Output Filter (`scripts/cmd_filter.py`)**:
-   - Preserves the **original command prefix at the start of the command string**:
-     ```bash
-     pytest -q tests/ 2>&1 | python3 "/path/to/cmd_filter.py" --pipe
-     ```
-     so workspace permission allowlists (`"allow": ["npm test", "pytest", "git diff"]`) match cleanly without opaque base64 popups (`--run-b64` is reserved strictly as a fallback for multi-statement Windows PowerShell cmdlets).
-   - Automatically delegates to **`rtk`** when the `rtk` binary is installed on `PATH`.
-4. **Sub-2ms Persistent Background Worker (`scripts/hook_daemon.py` + `scripts/hook_entry.py`)**:
-   - Eliminates cold file-I/O and state-deserialization latency by keeping `read_guard`, `cmd_filter`, `search_guard`, and `outline_gen` hot in memory over a persistent local `TCP_NODELAY` loopback socket (`p50 = 1.95 ms`), auto-shutting down after 30 minutes of idle time and failing open if unavailable.
-5. **Cache-Safe Skill (`skills/token-guard/SKILL.md`, `~309` tokens)**:
-   - Structural terseness, parallel tool batching, symbol-first narrow reads, script-first bulk ops, and subagent model tiering—with **zero `PreInvocation` hooks** so the KV prompt prefix cache remains untouched.
+### Allowlist command filter (`scripts/cmd_filter.py`)
+- Command left unmodified at the start of the command string so allowlist prefixes match without raising permission prompts (`pytest -q tests/ 2>&1 | python3 ".../cmd_filter.py" --pipe`). If running with `allow: ["npm test", "pytest", "git diff"]` this still passes.
+- If `rtk` binary is available in `PATH`, delegates to `rtk`.
+- ANSI codes and successful test lines stripped. Stack traces and exit codes preserved. Full logs written to `%TEMP%/token-guard-logs/`.
 
-## How `token-guard` Fits With RTK, Caveman & Ponytail
+### Loopback Socket Daemon (`scripts/hook_daemon.py` & `hook_entry.py`)
+- Makes a persistent background process whose purpose is to run hook modules on `127.0.0.1` (uses `TCP_NODELAY`, p50 of 1.95 ms), which closes after 30 min inactivity and will fail open if any errors.
 
-| Tool | Strength | How `token-guard` Integrates / Complements |
-| :--- | :--- | :--- |
-| **`RTK`** | High-speed compiled Rust CLI & pipeline proxy for shell/tool output | `cmd_filter.py` auto-detects `rtk` on `PATH` (`prefer_rtk=True`) and delegates supported CLI commands directly to `rtk`, while adding `PreCompact`-aware read-range trimming and AST file outlines |
-| **`caveman` / `ponytail`** | Output brevity, code-mode discipline, and minimal diffs | Pair with `token-guard`'s `PreToolUse` guards (`read_guard.py`, `search_guard.py`, `outline_gen.py`) for full input + output coverage |
+### Skill (`skills/token-guard/SKILL.md`, ~309 Tokens)
+- Parallel tool calls, bounded symbolic reads, script-first bulk edits.
 
-## Run Tests & Benchmarks
+## Using with RTK
+`cmd_filter.py` checks if `rtk` is on the system using `shutil.which("rtk")`. If RTK is detected, shell compression delegates to `rtk`. `read_guard.py` and `outline_gen.py` will perform read reduction and AST file outlines.
 
-```bash
-python3 -m unittest discover -s tests -v
-python3 scripts/ab_benchmark.py
-python3 scripts/audit_transcript.py path/to/transcript.jsonl --json
-```
+## Using with Caveman or Ponytail
+Caveman / Ponytail reduce assistant output, while Token guard reduces inputs from tool calls into context, so they can be used together.
